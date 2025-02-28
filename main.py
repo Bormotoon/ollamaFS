@@ -7,6 +7,15 @@ import requests
 import json
 import time
 from typing import List, Dict, Any
+import mimetypes
+import tempfile
+
+# For document text extraction
+import docx
+import PyPDF2
+import csv
+import re
+from pathlib import Path
 
 
 class DocumentSorter:
@@ -73,6 +82,20 @@ class DocumentSorter:
 		self.category_text = tk.Text(category_frame, height=10)
 		self.category_text.pack(fill=tk.BOTH, expand=True, pady=5)
 		self.category_text.insert(tk.END, "Documents\nImages\nSpreadsheets\nPresentations\nPDFs\nOther")
+
+		# Document content analysis settings
+		analysis_frame = ttk.LabelFrame(main_frame, text="Document Analysis Settings", padding="10")
+		analysis_frame.pack(fill=tk.X, pady=10)
+
+		self.analyze_content_var = tk.BooleanVar(value=True)
+		ttk.Checkbutton(analysis_frame, text="Analyze document content", variable=self.analyze_content_var).pack(
+			anchor=tk.W)
+
+		max_size_frame = ttk.Frame(analysis_frame)
+		max_size_frame.pack(fill=tk.X, pady=5)
+		ttk.Label(max_size_frame, text="Max file size for content analysis (MB):").pack(side=tk.LEFT, padx=5)
+		self.max_size_var = tk.StringVar(value="10")
+		ttk.Entry(max_size_frame, textvariable=self.max_size_var, width=5).pack(side=tk.LEFT, padx=5)
 
 		# Log output
 		log_frame = ttk.LabelFrame(main_frame, text="Log", padding="10")
@@ -180,6 +203,15 @@ class DocumentSorter:
 			messagebox.showerror("Error", "Please define at least one category")
 			return
 
+		# Try to parse max file size
+		try:
+			max_size = float(self.max_size_var.get())
+			if max_size <= 0:
+				raise ValueError("Size must be positive")
+		except ValueError:
+			messagebox.showerror("Error", "Please enter a valid file size limit")
+			return
+
 		# Create category folders if they don't exist
 		for category in categories:
 			category_path = os.path.join(dest_dir, category)
@@ -194,7 +226,7 @@ class DocumentSorter:
 
 		thread = threading.Thread(
 			target=self.sort_documents,
-			args=(source_dir, dest_dir, categories)
+			args=(source_dir, dest_dir, categories, max_size)
 		)
 		thread.daemon = True
 		thread.start()
@@ -204,7 +236,110 @@ class DocumentSorter:
 			self.cancel_requested = True
 			self.log_message("Cancellation requested. Waiting for current operations to complete...")
 
-	def sort_documents(self, source_dir, dest_dir, categories):
+	def extract_document_content(self, file_path, file_info):
+		"""Extract text content from document files, focusing on title and author if possible."""
+		try:
+			extension = file_info['extension'].lower()
+			content = ""
+			title = ""
+			author = ""
+
+			# Microsoft Word documents
+			if extension in ['.docx', '.doc']:
+				if extension == '.docx':
+					try:
+						doc = docx.Document(file_path)
+						# Extract paragraphs
+						content = "\n".join([p.text for p in doc.paragraphs if p.text])
+
+						# Try to extract metadata
+						properties = doc.core_properties
+						if hasattr(properties, 'title') and properties.title:
+							title = properties.title
+						if hasattr(properties, 'author') and properties.author:
+							author = properties.author
+					except Exception as e:
+						self.log_message(f"Error extracting DOCX content: {str(e)}")
+				else:
+					# For .doc files, we would need additional libraries
+					# Consider using textract or antiword in a production app
+					content = f"[DOC file: {os.path.basename(file_path)}]"
+
+			# PDF files
+			elif extension == '.pdf':
+				try:
+					with open(file_path, 'rb') as file:
+						reader = PyPDF2.PdfReader(file)
+
+						# Extract text from first few pages (max 5)
+						page_texts = []
+						max_pages = min(5, len(reader.pages))
+						for i in range(max_pages):
+							page = reader.pages[i]
+							page_texts.append(page.extract_text())
+
+						content = "\n".join(page_texts)
+
+						# Try to extract document info
+						if reader.metadata:
+							if '/Title' in reader.metadata:
+								title = reader.metadata['/Title']
+							if '/Author' in reader.metadata:
+								author = reader.metadata['/Author']
+				except Exception as e:
+					self.log_message(f"Error extracting PDF content: {str(e)}")
+
+			# Text files
+			elif extension in ['.txt', '.md', '.rtf']:
+				try:
+					with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+						content = file.read(10000)  # Read at most 10,000 characters
+
+						# Try to extract a title from the first line
+						lines = content.split('\n')
+						if lines and lines[0].strip():
+							title = lines[0].strip()
+				except Exception as e:
+					self.log_message(f"Error extracting text file content: {str(e)}")
+
+			# CSV files
+			elif extension == '.csv':
+				try:
+					with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+						csv_reader = csv.reader(file)
+						rows = []
+						for i, row in enumerate(csv_reader):
+							rows.append(','.join(row))
+							if i >= 10:  # Read at most 10 rows
+								break
+						content = '\n'.join(rows)
+				except Exception as e:
+					self.log_message(f"Error extracting CSV content: {str(e)}")
+
+			# If we couldn't extract title from metadata, try to infer it
+			if not title and content:
+				# Try to find a title in the first few lines
+				lines = content.split('\n')
+				for line in lines[:5]:
+					line = line.strip()
+					if line and len(line) < 100:  # A reasonable title length
+						title = line
+						break
+
+			# Prepare the extracted information
+			extracted_info = {
+				"content_sample": content[:1000] if content else "",  # First 1000 chars
+				"title": title,
+				"author": author
+			}
+
+			return extracted_info
+
+		except Exception as e:
+			self.log_message(f"Error extracting content: {str(e)}")
+			return {"content_sample": "", "title": "", "author": ""}
+
+	def sort_documents(self, source_dir, dest_dir, categories, max_size_mb):
 		try:
 			files = [f for f in os.listdir(source_dir) if os.path.isfile(os.path.join(source_dir, f))]
 
@@ -214,6 +349,8 @@ class DocumentSorter:
 				return
 
 			self.log_message(f"Found {len(files)} files to process")
+			max_size_bytes = max_size_mb * 1024 * 1024  # Convert MB to bytes
+			analyze_content = self.analyze_content_var.get()
 
 			for i, filename in enumerate(files):
 				if self.cancel_requested:
@@ -221,24 +358,33 @@ class DocumentSorter:
 					break
 
 				file_path = os.path.join(source_dir, filename)
-
-				# Skip very large files
-				if os.path.getsize(file_path) > 1024 * 1024 * 10:  # 10MB
-					self.log_message(f"Skipping large file: {filename}")
-					continue
-
-				self.log_message(f"Processing: {filename}")
+				file_size = os.path.getsize(file_path)
 
 				# Get file extension and basic info
 				_, ext = os.path.splitext(filename)
 				file_info = {
 					"filename": filename,
 					"extension": ext.lower(),
-					"size_bytes": os.path.getsize(file_path)
+					"size_bytes": file_size,
+					"mime_type": mimetypes.guess_type(filename)[0] or "unknown/unknown"
 				}
 
+				self.log_message(f"Processing: {filename} ({file_size / 1024 / 1024:.2f} MB)")
+
+				# Extract content if enabled and file not too large
+				content_info = {"content_sample": "", "title": "", "author": ""}
+				if analyze_content and file_size <= max_size_bytes:
+					# Check if it's a document type we can parse
+					if ext.lower() in ['.docx', '.pdf', '.txt', '.md', '.rtf', '.csv']:
+						self.log_message(f"Extracting content from {filename}")
+						content_info = self.extract_document_content(file_path, file_info)
+						if content_info["title"]:
+							self.log_message(f"Found title: {content_info['title']}")
+						if content_info["author"]:
+							self.log_message(f"Found author: {content_info['author']}")
+
 				# Classify the file using Ollama
-				category = self.classify_file(file_info, categories)
+				category = self.classify_file(file_info, categories, content_info)
 
 				if category:
 					dest_path = os.path.join(dest_dir, category, filename)
@@ -265,7 +411,7 @@ class DocumentSorter:
 		finally:
 			self.complete_sorting()
 
-	def classify_file(self, file_info, categories):
+	def classify_file(self, file_info, categories, content_info=None):
 		try:
 			# Prepare prompt for the model
 			prompt = f"""
@@ -275,9 +421,28 @@ class DocumentSorter:
             - Filename: {file_info['filename']}
             - Extension: {file_info['extension']}
             - Size: {file_info['size_bytes']} bytes
-
-            Respond with ONLY the category name, nothing else.
+            - MIME type: {file_info['mime_type']}
             """
+
+			# Add content information if available
+			if content_info and (content_info["title"] or content_info["author"] or content_info["content_sample"]):
+				prompt += "\nDocument content information:\n"
+
+				if content_info["title"]:
+					prompt += f"- Title: {content_info['title']}\n"
+
+				if content_info["author"]:
+					prompt += f"- Author: {content_info['author']}\n"
+
+				if content_info["content_sample"]:
+					# Trim content to avoid overloading the model
+					sample = content_info["content_sample"]
+					if len(sample) > 500:
+						sample = sample[:500] + "..."
+
+					prompt += f"- Content sample: {sample}\n"
+
+			prompt += "\nRespond with ONLY the category name, nothing else."
 
 			# Send request to Ollama
 			response = requests.post(
@@ -341,6 +506,9 @@ class DocumentSorter:
 
 
 def main():
+	# Initialize mimetypes
+	mimetypes.init()
+
 	root = tk.Tk()
 	app = DocumentSorter(root)
 	root.mainloop()
