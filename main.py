@@ -1,6 +1,7 @@
 import os
 import shutil
 import tkinter as tk
+from tkinterdnd2 import *
 from tkinter import filedialog, ttk, messagebox, simpledialog
 import threading
 import requests
@@ -84,7 +85,7 @@ class DocumentSorter:
         self.check_ollama_status()  # Проверка статуса Ollama
 
         # Поддержка drag-and-drop
-        self.root.drop_target_register(tk.DND_FILES)
+        self.root.drop_target_register(DND_FILES)  # Исправлено: tk.DND_FILES → DND_FILES
         self.root.dnd_bind('<<Drop>>', self.handle_drop)
 
     def setup_ui(self):
@@ -640,7 +641,7 @@ def main():
         sorter.dedupe_mode.set(args.dedupe)
         sorter.sort_documents(args.source, args.dest, categories)
     else:
-        root = tk.Tk()
+        root = TkinterDnD.Tk()
         app = DocumentSorter(root)
         root.mainloop()
 
