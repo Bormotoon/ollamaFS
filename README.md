@@ -4,6 +4,12 @@
 
 ### Overview
 
+Source of inspiration and original idea: https://github.com/adamwbull/llama-fs
+
+I really liked the idea of the “take shit apart” button, but I never got it to run properly. It wouldn't wind up on macOS for some reason, and also the API costs money... So when Grok 3 rolled out, I asked him to write it all over again.
+
+I think it turned out pretty well. Check it out for yourself.
+
 "Document Sorter with Ollama" is a Python-based application designed to organize files into categories using the Ollama
 AI model. It supports both local and cloud-based file sorting (Google Drive and Dropbox), with features like duplicate
 removal, automatic category generation, and a user-friendly GUI built with Tkinter.
@@ -15,9 +21,9 @@ removal, automatic category generation, and a user-friendly GUI built with Tkint
   default is 3).
 - **Manual Categories**: Users can define custom categories and subcategories via a tree-like interface.
 - **Duplicate Removal**: Two modes:
-    - **Normal**: Removes exact duplicates based on MD5 hash, keeping the newest file.
-    - **Hardcore**: Removes files with identical names and sizes (allowing minor content differences), keeping the
-      newest.
+  - **Normal**: Removes exact duplicates based on MD5 hash, keeping the newest file.
+  - **Hardcore**: Removes files with identical names and sizes (allowing minor content differences), keeping the
+    newest.
 - **Cloud Integration**: Supports Google Drive and Dropbox for sorting files directly from cloud storage.
 - **Backup**: Creates ZIP backups of the source directory before sorting.
 - **Localization**: Available in English and Russian, switchable via the GUI.
@@ -27,23 +33,21 @@ removal, automatic category generation, and a user-friendly GUI built with Tkint
 ### Installation
 
 1. **Clone the Repository**:
+   
    ```bash
    git clone https://github.com/yourusername/document-sorter-ollama.git
    cd document-sorter-ollama
+   ```
 
 2. **Set Up Virtual Environment** (optional but recommended):
-
+   
    bash
-
-
 
 `python -m venv venv source venv/bin/activate # Linux/Mac venv\Scripts\activate # Windows`
 
 4. **Install Dependencies**:
-
+   
    bash
-
-
 
 `pip install -r requirements.txt`
 
@@ -55,30 +59,26 @@ removal, automatic category generation, and a user-friendly GUI built with Tkint
 #### GUI Mode
 
 - Run the script without arguments:
-
-  bash
-
   
+  bash
 
   `python main.py`
 
 - Use the interface to:
-
-    - Select source and destination directories.
-
-    - Enable "Automatic Sorting" or manually define categories.
-
-    - Choose a duplicate removal mode.
-
-    - Start sorting with the "Start Sorting" button.
+  
+  - Select source and destination directories.
+  
+  - Enable "Automatic Sorting" or manually define categories.
+  
+  - Choose a duplicate removal mode.
+  
+  - Start sorting with the "Start Sorting" button.
 
 #### Command-Line Mode
 
 - Run with arguments:
-
-  bash
-
   
+  bash
 
   `python main.py --source /path/to/source --dest /path/to/dest --categories "Docs,Images" --dedupe normal`
 
@@ -106,6 +106,12 @@ See requirements.txt for a complete list of Python dependencies.
 
 ### Обзор
 
+Источник вдохновения и первоначальная идея: https://github.com/adamwbull/llama-fs
+
+Мне очень понравилась мысль кнопки "разбери всё дерьмо", но я так никогда и не смог запустить как надо. На macOS оно почему-то не заводилось, да ещё и API стоит денег... Поэтому, когда выкатили Grok 3, я попросил его написать всё заново.
+
+По-моему, получилось неплохо. Зацените сами.
+
 "Document Sorter with Ollama" — это приложение на Python для сортировки файлов по категориям с использованием модели ИИ
 Ollama. Поддерживает работу с локальными файлами и облачными хранилищами (Google Drive и Dropbox), включает удаление
 дубликатов, автоматическую генерацию категорий и удобный интерфейс на Tkinter.
@@ -120,10 +126,10 @@ Ollama. Поддерживает работу с локальными файла
 - **Ручные категории**: Пользователь может задавать категории и подкатегории через древовидный интерфейс.
 
 - **Удаление дубликатов**: Два режима:
-
-    - **Обычный**: Удаляет точные копии по MD5-хэшу, сохраняя самый новый файл.
-
-    - **Жёсткий**: Удаляет файлы с одинаковыми именами и размерами (допуская небольшие различия), сохраняя самый новый.
+  
+  - **Обычный**: Удаляет точные копии по MD5-хэшу, сохраняя самый новый файл.
+  
+  - **Жёсткий**: Удаляет файлы с одинаковыми именами и размерами (допуская небольшие различия), сохраняя самый новый.
 
 - **Интеграция с облаком**: Поддержка Google Drive и Dropbox для сортировки файлов из облака.
 
@@ -138,26 +144,20 @@ Ollama. Поддерживает работу с локальными файла
 ### Установка
 
 1. **Клонируйте репозиторий**:
-
+   
    bash
-
-
 
 `git clone https://github.com/yourusername/document-sorter-ollama.git cd document-sorter-ollama`
 
 3. **Настройте виртуальное окружение** (рекомендуется):
-
+   
    bash
-
-
 
 `python -m venv venv source venv/bin/activate # Linux/Mac venv\Scripts\activate # Windows`
 
 5. **Установите зависимости**:
-
+   
    bash
-
-
 
 `pip install -r requirements.txt`
 
@@ -169,30 +169,26 @@ Ollama. Поддерживает работу с локальными файла
 #### Режим GUI
 
 - Запустите скрипт без аргументов:
-
-  bash
-
   
+  bash
 
   `python main.py`
 
 - Используйте интерфейс для:
-
-    - Выбора исходной и целевой папок.
-
-    - Включения "Автоматической сортировки" или задания категорий вручную.
-
-    - Выбора режима удаления дубликатов.
-
-    - Запуска сортировки кнопкой "Start Sorting".
+  
+  - Выбора исходной и целевой папок.
+  
+  - Включения "Автоматической сортировки" или задания категорий вручную.
+  
+  - Выбора режима удаления дубликатов.
+  
+  - Запуска сортировки кнопкой "Start Sorting".
 
 #### Режим командной строки
 
 - Запустите с аргументами:
-
-  bash
-
   
+  bash
 
   `python main.py --source /путь/к/исходной --dest /путь/к/целевой --categories "Документы,Изображения" --dedupe normal`
 
