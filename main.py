@@ -1,35 +1,29 @@
+import argparse
+import concurrent.futures
+import gettext
+import hashlib
+import json
+import locale
 import os
 import shutil
-import tkinter as tk
-from tkinter import filedialog, ttk, messagebox, simpledialog
-from tkinterdnd2 import *  # Добавляем поддержку Drag-and-Drop
 import threading
-import requests
-import json
 import time
-from typing import List, Dict, Any
-import mimetypes
-import datetime
+import tkinter as tk
 import zipfile
-import hashlib
-import locale
-import subprocess
-import sys
-import argparse
+from tkinter import filedialog, ttk, messagebox, simpledialog
+
+import PyPDF2
+import docx
+import requests
+from dropbox import Dropbox
+from dropbox.exceptions import ApiError, AuthError
+from dropbox.files import WriteMode
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-import io
-from dropbox import Dropbox
-from dropbox.files import WriteMode
-from dropbox.exceptions import ApiError, AuthError
-import docx
-import PyPDF2
-import csv
-from odf import text, teletype
 from langdetect import detect
-import concurrent.futures
-import gettext
+from odf import text, teletype
+from tkinterdnd2 import *  # Добавляем поддержку Drag-and-Drop
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -394,11 +388,8 @@ class DocumentSorter:
         """Генерирует категории автоматически с помощью Ollama."""
         self.category_list.clear()
         self.category_tree.delete(*self.category_tree.get_children())
-        file_info_list = [
-            {"filename": os.path.basename(f), "extension": os.path.splitext(f)[1].lower(),
-             "size_bytes": os.path.getsize(f)}
-            for f in files
-        ]
+        file_info_list = [{"filename": os.path.basename(f), "extension": os.path.splitext(f)[1].lower(),
+                           "size_bytes": os.path.getsize(f)} for f in files]
         prompt = f"""
         {_('Analyze the following files and suggest a hierarchical category structure with a maximum depth of')} {self.max_depth}.
         {_('Return a JSON object with categories and subcategories based on file names, extensions, and sizes.')}
@@ -416,10 +407,8 @@ class DocumentSorter:
         }}
         """
         try:
-            response = requests.post(
-                f"{self.ollama_url}/generate",
-                json={"model": self.model, "prompt": prompt, "stream": False}
-            )
+            response = requests.post(f"{self.ollama_url}/generate",
+                json={"model": self.model, "prompt": prompt, "stream": False})
             if response.status_code == 200:
                 categories = json.loads(response.json().get("response", "{}"))
                 self._build_category_tree(categories)
@@ -511,11 +500,8 @@ class DocumentSorter:
 
     def process_file(self, file_path, dest_dir):
         filename = os.path.basename(file_path)
-        file_info = {
-            "filename": filename,
-            "extension": os.path.splitext(filename)[1].lower(),
-            "size_bytes": os.path.getsize(file_path)
-        }
+        file_info = {"filename": filename, "extension": os.path.splitext(filename)[1].lower(),
+            "size_bytes": os.path.getsize(file_path)}
         self.log_message(_(f"Processing: {filename}"))
         category = self.classify_file(file_info)
         if category:
@@ -536,10 +522,8 @@ class DocumentSorter:
             {_('Size:')} {file_info['size_bytes']} {_('bytes')}
             {_('Respond with ONLY the category name.')}
             """
-            response = requests.post(
-                f"{self.ollama_url}/generate",
-                json={"model": self.model, "prompt": prompt, "stream": False}
-            )
+            response = requests.post(f"{self.ollama_url}/generate",
+                json={"model": self.model, "prompt": prompt, "stream": False})
             if response.status_code == 200:
                 category = response.json().get("response", "").strip()
                 return category if category in self.category_list else self.category_list[0]
