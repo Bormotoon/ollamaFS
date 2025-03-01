@@ -4,7 +4,7 @@
 
 ### Overview
 
-Source of inspiration and original idea: https://github.com/adamwbull/llama-fs
+Source of inspiration and original idea: https://github.com/iyaja/llama-fs
 
 I really liked the idea of the “take shit apart” button, but I never got it to run properly. It wouldn't wind up on macOS for some reason, and also the API costs money... So when Grok 3 rolled out, I asked him to write it all over again.
 
@@ -106,7 +106,7 @@ See requirements.txt for a complete list of Python dependencies.
 
 ### Обзор
 
-Источник вдохновения и первоначальная идея: https://github.com/adamwbull/llama-fs
+Источник вдохновения и первоначальная идея: https://github.com/iyaja/llama-fs
 
 Мне очень понравилась мысль кнопки "разбери всё дерьмо", но я так никогда и не смог запустить как надо. На macOS оно почему-то не заводилось, да ещё и API стоит денег... Поэтому, когда выкатили Grok 3, я попросил его написать всё заново.
 
