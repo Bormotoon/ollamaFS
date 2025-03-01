@@ -11,6 +11,7 @@ import time  # Для добавления временных меток в ло
 import tkinter as tk  # Базовый модуль для создания GUI
 import zipfile  # Для создания резервных копий в ZIP-формате
 from tkinter import filedialog, ttk, messagebox, simpledialog  # Компоненты Tkinter для интерфейса
+from jinja2 import Environment, FileSystemLoader  # Для генерации HTML-отчётов
 
 import PyPDF2  # Для работы с PDF-файлами
 import docx  # Для работы с DOCX-файлами
@@ -59,39 +60,99 @@ class DocumentSorter:
         model (str): Текущая модель Ollama для классификации.
         available_models (list): Список доступных моделей Ollama.
         category_list (list): Список категорий для сортировки.
-        cache (dict): Кэш для хранения результатов анализа файлов.
+        cache (dict): Кэш для хранения результатов классификации файлов.
         language (str): Текущий язык интерфейса.
         google_drive_service (Any): Сервис Google Drive API или None.
         dropbox_client (Dropbox): Клиент Dropbox API или None.
     """
 
-    def __init__(self, root):
+    def __init__(self, root, ollama_url="http://localhost:11434/api"):
         """
         Инициализирует экземпляр класса DocumentSorter.
 
         Аргументы:
             root (TkinterDnD.Tk): Корневое окно приложения.
+            ollama_url (str): URL для подключения к API Ollama (по умолчанию "http://localhost:11434/api").
         """
         self.root = root  # Сохранение корневого окна
         self.root.title(_("Document Sorter with Ollama"))  # Установка заголовка окна
         self.root.geometry("900x700")  # Установка размеров окна
         self.root.resizable(True, True)  # Разрешение изменения размеров окна
 
-        self.ollama_url = "http://localhost:11434/api"  # URL для API Ollama
+        self.ollama_url = ollama_url  # URL для API Ollama
         self.model = "deepseek-coder"  # Модель по умолчанию
         self.available_models = []  # Список моделей, доступных в Ollama
         self.category_list = []  # Список категорий для сортировки
-        self.cache = {}  # Кэш для ускорения повторной обработки
+        self.cache = self.load_cache()  # Загрузка кэша классификации
         self.language = "en"  # Язык интерфейса по умолчанию
         self.google_drive_service = None  # Сервис Google Drive (пока не подключён)
         self.dropbox_client = None  # Клиент Dropbox (пока не подключён)
 
         self.setup_ui()  # Настройка пользовательского интерфейса
+        self.load_config()  # Загрузка пользовательских настроек
         self.check_ollama_status()  # Проверка состояния Ollama
 
         # Настройка Drag-and-Drop
         self.root.drop_target_register(DND_FILES)  # Регистрация окна для принятия файлов
         self.root.dnd_bind('<<Drop>>', self.handle_drop)  # Привязка обработчика события перетаскивания
+
+    def load_cache(self):
+        """
+        Загружает кэш классификации из файла cache.json.
+
+        Возвращает:
+            dict: Словарь с результатами классификации или пустой словарь.
+        """
+        cache_file = "cache.json"  # Имя файла кэша
+        if os.path.exists(cache_file):  # Проверка наличия файла
+            with open(cache_file, 'r', encoding='utf-8') as f:  # Открытие файла для чтения
+                return json.load(f)  # Загрузка данных из JSON
+        return {}  # Возвращение пустого словаря, если файла нет
+
+    def save_cache(self):
+        """
+        Сохраняет кэш классификации в файл cache.json.
+        """
+        with open("cache.json", 'w', encoding='utf-8') as f:  # Открытие файла для записи
+            json.dump(self.cache, f, indent=2)  # Сохранение кэша в JSON
+
+    def load_config(self):
+        """
+        Загружает пользовательские настройки из файла config.json.
+        """
+        config_file = "config.json"  # Имя файла конфигурации
+        if os.path.exists(config_file):  # Проверка наличия файла
+            with open(config_file, 'r', encoding='utf-8') as f:  # Открытие файла для чтения
+                config = json.load(f)  # Загрузка данных из JSON
+                self.source_dir_var.set(config.get("source_dir", ""))  # Установка исходной папки
+                self.dest_dir_var.set(config.get("dest_dir", ""))  # Установка целевой папки
+                self.dedupe_mode.set(config.get("dedupe_mode", "none"))  # Установка режима дубликатов
+                self.ollama_url = config.get("ollama_url", self.ollama_url)  # Установка URL Ollama
+                if "categories" in config and config["categories"]:  # Если есть категории
+                    self.auto_sort_var.set(False)  # Отключение автоматической сортировки
+                    self.category_list = config["categories"]  # Загрузка категорий
+                    for cat in self.category_list:  # Обход категорий
+                        parts = cat.split("/")  # Разделение на подкатегории
+                        parent = ""  # Идентификатор родителя
+                        for part in parts:  # Обход частей пути
+                            full_part = f"{parent}/{part}" if parent else part  # Формирование полного пути
+                            if full_part not in [self.category_tree.item(i, "text") for i in self.category_tree.get_children(parent)]:
+                                parent_id = self.category_tree.insert(parent if parent else "", tk.END, text=part)
+                                parent = parent_id if parent else parent_id
+
+    def save_config(self):
+        """
+        Сохраняет пользовательские настройки в файл config.json.
+        """
+        config = {
+            "source_dir": self.source_dir_var.get(),  # Сохранение исходной папки
+            "dest_dir": self.dest_dir_var.get(),  # Сохранение целевой папки
+            "dedupe_mode": self.dedupe_mode.get(),  # Сохранение режима дубликатов
+            "ollama_url": self.ollama_url,  # Сохранение URL Ollama
+            "categories": self.category_list if not self.auto_sort_var.get() else []  # Сохранение категорий, если не авто
+        }
+        with open("config.json", 'w', encoding='utf-8') as f:  # Открытие файла для записи
+            json.dump(config, f, indent=2)  # Сохранение настроек в JSON
 
     def setup_ui(self):
         """
@@ -123,35 +184,26 @@ class DocumentSorter:
         self.model_combobox = ttk.Combobox(model_frame, state="readonly")  # Выпадающий список моделей
         self.model_combobox.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)  # Размещение списка
         self.model_combobox.bind("<<ComboboxSelected>>", self.on_model_selected)  # Привязка обработчика выбора
-        refresh_button = ttk.Button(model_frame, text=_("Refresh Models"),
-                                    command=self.fetch_models)  # Кнопка обновления
+        refresh_button = ttk.Button(model_frame, text=_("Refresh Models"), command=self.fetch_models)  # Кнопка обновления
         refresh_button.pack(side=tk.RIGHT, padx=5)  # Размещение кнопки
 
         # Фрейм для облачных сервисов
         cloud_frame = ttk.LabelFrame(main_frame, text=_("Cloud Storage"), padding="10")  # Фрейм для облачных хранилищ
         cloud_frame.pack(fill=tk.X, pady=10)  # Размещение фрейма
-        ttk.Button(cloud_frame, text=_("Connect Google Drive"), command=self.connect_google_drive).pack(side=tk.LEFT,
-                                                                                                        padx=5)  # Кнопка Google Drive
-        ttk.Button(cloud_frame, text=_("Connect Dropbox"), command=self.connect_dropbox).pack(side=tk.LEFT,
-                                                                                              padx=5)  # Кнопка Dropbox
+        ttk.Button(cloud_frame, text=_("Connect Google Drive"), command=self.connect_google_drive).pack(side=tk.LEFT, padx=5)  # Кнопка Google Drive
+        ttk.Button(cloud_frame, text=_("Connect Dropbox"), command=self.connect_dropbox).pack(side=tk.LEFT, padx=5)  # Кнопка Dropbox
 
         # Фрейм выбора каталогов
         dir_frame = ttk.LabelFrame(main_frame, text=_("Directory Selection"), padding="10")  # Фрейм для выбора папок
         dir_frame.pack(fill=tk.X, pady=10)  # Размещение фрейма
-        ttk.Label(dir_frame, text=_("Source Directory:")).grid(row=0, column=0, sticky=tk.W,
-                                                               pady=5)  # Надпись "Исходная папка"
+        ttk.Label(dir_frame, text=_("Source Directory:")).grid(row=0, column=0, sticky=tk.W, pady=5)  # Надпись "Исходная папка"
         self.source_dir_var = tk.StringVar()  # Переменная для хранения пути к исходной папке
-        ttk.Entry(dir_frame, textvariable=self.source_dir_var, width=50).grid(row=0, column=1, padx=5, pady=5,
-                                                                              sticky=tk.EW)  # Поле ввода пути
-        ttk.Button(dir_frame, text=_("Browse"), command=self.browse_source_dir).grid(row=0, column=2, padx=5,
-                                                                                     pady=5)  # Кнопка выбора папки
-        ttk.Label(dir_frame, text=_("Destination Directory:")).grid(row=1, column=0, sticky=tk.W,
-                                                                    pady=5)  # Надпись "Целевая папка"
+        ttk.Entry(dir_frame, textvariable=self.source_dir_var, width=50).grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)  # Поле ввода пути
+        ttk.Button(dir_frame, text=_("Browse"), command=self.browse_source_dir).grid(row=0, column=2, padx=5, pady=5)  # Кнопка выбора папки
+        ttk.Label(dir_frame, text=_("Destination Directory:")).grid(row=1, column=0, sticky=tk.W, pady=5)  # Надпись "Целевая папка"
         self.dest_dir_var = tk.StringVar()  # Переменная для хранения пути к целевой папке
-        ttk.Entry(dir_frame, textvariable=self.dest_dir_var, width=50).grid(row=1, column=1, padx=5, pady=5,
-                                                                            sticky=tk.EW)  # Поле ввода пути
-        ttk.Button(dir_frame, text=_("Browse"), command=self.browse_dest_dir).grid(row=1, column=2, padx=5,
-                                                                                   pady=5)  # Кнопка выбора папки
+        ttk.Entry(dir_frame, textvariable=self.dest_dir_var, width=50).grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)  # Поле ввода пути
+        ttk.Button(dir_frame, text=_("Browse"), command=self.browse_dest_dir).grid(row=1, column=2, padx=5, pady=5)  # Кнопка выбора папки
         dir_frame.columnconfigure(1, weight=1)  # Настройка растяжения столбца
 
         # Фрейм настроек категорий
@@ -163,13 +215,10 @@ class DocumentSorter:
         # Подфрейм для автоматической сортировки и глубины подкатегорий
         auto_frame = ttk.Frame(category_frame)  # Создание подфрейма
         auto_frame.pack(fill=tk.X, pady=5)  # Размещение подфрейма
-        self.auto_sort_var = tk.BooleanVar(
-            value=True)  # Переменная для автоматической сортировки (по умолчанию включена)
-        self.auto_sort_check = ttk.Checkbutton(auto_frame, text=_("Automatic Sorting"), variable=self.auto_sort_var,
-                                               command=self.toggle_auto_sort)  # Чекбокс автоматической сортировки
+        self.auto_sort_var = tk.BooleanVar(value=True)  # Переменная для автоматической сортировки (по умолчанию включена)
+        self.auto_sort_check = ttk.Checkbutton(auto_frame, text=_("Automatic Sorting"), variable=self.auto_sort_var, command=self.toggle_auto_sort)  # Чекбокс автоматической сортировки
         self.auto_sort_check.pack(side=tk.LEFT, padx=5)  # Размещение чекбокса
-        ttk.Label(auto_frame, text=_("Max Subcategory Depth:")).pack(side=tk.LEFT,
-                                                                     padx=5)  # Надпись "Максимальная глубина подкатегорий"
+        ttk.Label(auto_frame, text=_("Max Subcategory Depth:")).pack(side=tk.LEFT, padx=5)  # Надпись "Максимальная глубина подкатегорий"
         self.max_depth_var = tk.StringVar(value="3")  # Переменная для максимальной глубины (по умолчанию 3)
         self.max_depth_entry = ttk.Entry(auto_frame, textvariable=self.max_depth_var, width=5)  # Поле ввода глубины
         self.max_depth_entry.pack(side=tk.LEFT, padx=5)  # Размещение поля ввода
@@ -177,36 +226,27 @@ class DocumentSorter:
         # Подфрейм кнопок управления категориями
         category_buttons_frame = ttk.Frame(category_frame)  # Создание подфрейма для кнопок
         category_buttons_frame.pack(fill=tk.X, pady=5)  # Размещение подфрейма
-        self.add_category_btn = ttk.Button(category_buttons_frame, text=_("Add Category"), command=self.add_category,
-                                           state=tk.DISABLED)  # Кнопка добавления категории
+        self.add_category_btn = ttk.Button(category_buttons_frame, text=_("Add Category"), command=self.add_category, state=tk.DISABLED)  # Кнопка добавления категории
         self.add_category_btn.pack(side=tk.LEFT, padx=5)  # Размещение кнопки
-        self.add_subcategory_btn = ttk.Button(category_buttons_frame, text=_("Add Subcategory"),
-                                              command=self.add_subcategory,
-                                              state=tk.DISABLED)  # Кнопка добавления подкатегории
+        self.add_subcategory_btn = ttk.Button(category_buttons_frame, text=_("Add Subcategory"), command=self.add_subcategory, state=tk.DISABLED)  # Кнопка добавления подкатегории
         self.add_subcategory_btn.pack(side=tk.LEFT, padx=5)  # Размещение кнопки
-        self.remove_category_btn = ttk.Button(category_buttons_frame, text=_("Remove"), command=self.remove_category,
-                                              state=tk.DISABLED)  # Кнопка удаления категории
+        self.remove_category_btn = ttk.Button(category_buttons_frame, text=_("Remove"), command=self.remove_category, state=tk.DISABLED)  # Кнопка удаления категории
         self.remove_category_btn.pack(side=tk.LEFT, padx=5)  # Размещение кнопки
 
         # Фрейм настроек удаления дубликатов
-        dedupe_frame = ttk.LabelFrame(main_frame, text=_("Duplicate Removal Options"),
-                                      padding="10")  # Фрейм для дубликатов
+        dedupe_frame = ttk.LabelFrame(main_frame, text=_("Duplicate Removal Options"), padding="10")  # Фрейм для дубликатов
         dedupe_frame.pack(fill=tk.X, pady=10)  # Размещение фрейма
         self.dedupe_mode = tk.StringVar(value="none")  # Переменная для режима удаления дубликатов
-        ttk.Radiobutton(dedupe_frame, text=_("No Deduplication"), value="none", variable=self.dedupe_mode).pack(
-            side=tk.LEFT, padx=5)  # Радиокнопка "Без удаления"
-        ttk.Radiobutton(dedupe_frame, text=_("Normal (Exact Matches)"), value="normal", variable=self.dedupe_mode).pack(
-            side=tk.LEFT, padx=5)  # Радиокнопка "Обычный режим"
-        ttk.Radiobutton(dedupe_frame, text=_("Hardcore (Similar Files)"), value="hardcore",
-                        variable=self.dedupe_mode).pack(side=tk.LEFT, padx=5)  # Радиокнопка "Жёсткий режим"
+        ttk.Radiobutton(dedupe_frame, text=_("No Deduplication"), value="none", variable=self.dedupe_mode).pack(side=tk.LEFT, padx=5)  # Радиокнопка "Без удаления"
+        ttk.Radiobutton(dedupe_frame, text=_("Normal (Exact Matches)"), value="normal", variable=self.dedupe_mode).pack(side=tk.LEFT, padx=5)  # Радиокнопка "Обычный режим"
+        ttk.Radiobutton(dedupe_frame, text=_("Hardcore (Similar Files)"), value="hardcore", variable=self.dedupe_mode).pack(side=tk.LEFT, padx=5)  # Радиокнопка "Жёсткий режим"
 
         # Фрейм лога
         log_frame = ttk.LabelFrame(main_frame, text=_("Log"), padding="10")  # Фрейм для лога
         log_frame.pack(fill=tk.BOTH, expand=True, pady=10)  # Размещение фрейма
         self.log_text = tk.Text(log_frame, height=10, state=tk.DISABLED)  # Текстовое поле для лога
         self.log_text.pack(fill=tk.BOTH, expand=True, pady=5)  # Размещение поля
-        ttk.Button(log_frame, text=_("Export Log"), command=self.export_log).pack(side=tk.BOTTOM,
-                                                                                  pady=5)  # Кнопка экспорта лога
+        ttk.Button(log_frame, text=_("Export Log"), command=self.export_log).pack(side=tk.BOTTOM, pady=5)  # Кнопка экспорта лога
 
         # Прогресс-бар
         self.progress_var = tk.DoubleVar()  # Переменная для отслеживания прогресса
@@ -216,11 +256,9 @@ class DocumentSorter:
         # Фрейм кнопок управления
         button_frame = ttk.Frame(main_frame)  # Создание фрейма для кнопок
         button_frame.pack(fill=tk.X, pady=10)  # Размещение фрейма
-        self.sort_button = ttk.Button(button_frame, text=_("Start Sorting"),
-                                      command=self.start_sorting)  # Кнопка запуска сортировки
+        self.sort_button = ttk.Button(button_frame, text=_("Start Sorting"), command=self.start_sorting)  # Кнопка запуска сортировки
         self.sort_button.pack(side=tk.RIGHT, padx=5)  # Размещение кнопки
-        self.backup_button = ttk.Button(button_frame, text=_("Create Backup"),
-                                        command=self.create_backup)  # Кнопка создания резервной копии
+        self.backup_button = ttk.Button(button_frame, text=_("Create Backup"), command=self.create_backup)  # Кнопка создания резервной копии
         self.backup_button.pack(side=tk.RIGHT, padx=5)  # Размещение кнопки
 
         self.is_processing = False  # Флаг выполнения процесса сортировки
@@ -240,6 +278,7 @@ class DocumentSorter:
             self.add_category_btn.config(state=tk.NORMAL)  # Включение кнопки добавления категории
             self.add_subcategory_btn.config(state=tk.NORMAL)  # Включение кнопки добавления подкатегории
             self.remove_category_btn.config(state=tk.NORMAL)  # Включение кнопки удаления категории
+        self.save_config()  # Сохранение настроек после изменения
 
     def change_language(self, lang):
         """
@@ -259,8 +298,7 @@ class DocumentSorter:
         Подключает приложение к Google Drive через API.
         """
         try:
-            creds = service_account.Credentials.from_service_account_file("credentials.json", scopes=[
-                "https://www.googleapis.com/auth/drive"])
+            creds = service_account.Credentials.from_service_account_file("credentials.json", scopes=["https://www.googleapis.com/auth/drive"])
             # Загрузка учётных данных из файла credentials.json
             self.google_drive_service = build('drive', 'v3', credentials=creds)  # Инициализация сервиса Google Drive
             self.log_message(_("Connected to Google Drive"))  # Сообщение об успешном подключении
@@ -290,6 +328,7 @@ class DocumentSorter:
         if os.path.isdir(dropped):  # Проверка, является ли объект папкой
             self.source_dir_var.set(dropped)  # Установка пути в переменную исходной папки
             self.log_message(_(f"Dropped directory: {dropped}"))  # Логирование события
+            self.save_config()  # Сохранение настроек после изменения
 
     def check_ollama_status(self):
         """
@@ -301,11 +340,9 @@ class DocumentSorter:
                 self.status_label.config(text=_("Connected"), foreground="green")  # Установка статуса "Подключено"
                 self.fetch_models()  # Обновление списка моделей
             else:
-                self.status_label.config(text=_("Error: API not responding"),
-                                         foreground="red")  # Установка статуса ошибки
+                self.status_label.config(text=_("Error: API not responding"), foreground="red")  # Установка статуса ошибки
         except requests.exceptions.ConnectionError:
-            self.status_label.config(text=_("Disconnected (Is Ollama running?)"),
-                                     foreground="red")  # Статус "Отключено"
+            self.status_label.config(text=_("Disconnected (Is Ollama running?)"), foreground="red")  # Статус "Отключено"
             self.root.after(5000, self.check_ollama_status)  # Повторная проверка через 5 секунд
 
     def fetch_models(self):
@@ -316,8 +353,7 @@ class DocumentSorter:
             response = requests.get(f"{self.ollama_url}/tags")  # Запрос списка моделей
             if response.status_code == 200:  # Если запрос успешен
                 models_data = response.json()  # Парсинг ответа в JSON
-                self.available_models = [model["name"] for model in
-                                         models_data.get("models", [])]  # Извлечение имён моделей
+                self.available_models = [model["name"] for model in models_data.get("models", [])]  # Извлечение имён моделей
                 self.model_combobox["values"] = self.available_models  # Обновление списка в интерфейсе
                 if self.model in self.available_models:  # Если текущая модель доступна
                     self.model_combobox.set(self.model)  # Установка текущей модели
@@ -344,6 +380,7 @@ class DocumentSorter:
         dir_path = filedialog.askdirectory(title=_("Select Source Directory"))  # Открытие диалога выбора папки
         if dir_path:  # Если папка выбрана
             self.source_dir_var.set(dir_path)  # Установка пути в переменную
+            self.save_config()  # Сохранение настроек после изменения
 
     def browse_dest_dir(self):
         """
@@ -352,6 +389,7 @@ class DocumentSorter:
         dir_path = filedialog.askdirectory(title=_("Select Destination Directory"))  # Открытие диалога выбора папки
         if dir_path:  # Если папка выбрана
             self.dest_dir_var.set(dir_path)  # Установка пути в переменную
+            self.save_config()  # Сохранение настроек после изменения
 
     def add_category(self):
         """
@@ -361,6 +399,7 @@ class DocumentSorter:
         if category and category not in self.category_list:  # Если имя введено и уникально
             self.category_tree.insert("", tk.END, text=category)  # Добавление категории в дерево
             self.category_list.append(category)  # Добавление категории в список
+            self.save_config()  # Сохранение настроек после изменения
 
     def add_subcategory(self):
         """
@@ -371,11 +410,11 @@ class DocumentSorter:
             messagebox.showwarning(_("Warning"), _("Select a category first"))  # Предупреждение
             return
         parent = self.category_tree.item(selected[0])["text"]  # Получение имени родительской категории
-        subcategory = simpledialog.askstring(_("Add Subcategory"),
-                                             _(f"Enter subcategory for {parent}:"))  # Запрос имени подкатегории
+        subcategory = simpledialog.askstring(_("Add Subcategory"), _(f"Enter subcategory for {parent}:"))  # Запрос имени подкатегории
         if subcategory:  # Если имя введено
             self.category_tree.insert(selected[0], tk.END, text=subcategory)  # Добавление подкатегории в дерево
             self.category_list.append(f"{parent}/{subcategory}")  # Добавление подкатегории в список
+            self.save_config()  # Сохранение настроек после изменения
 
     def remove_category(self):
         """
@@ -389,6 +428,7 @@ class DocumentSorter:
                 item = f"{self.category_tree.item(parent)['text']}/{item}"  # Формирование полного пути подкатегории
             self.category_tree.delete(selected[0])  # Удаление элемента из дерева
             self.category_list.remove(item)  # Удаление элемента из списка
+            self.save_config()  # Сохранение настроек после изменения
 
     def log_message(self, message):
         """
@@ -407,8 +447,7 @@ class DocumentSorter:
         Экспортирует содержимое лога в текстовый файл.
         """
         log_content = self.log_text.get("1.0", tk.END)  # Получение всего текста из лога
-        file_path = filedialog.asksaveasfilename(defaultextension=".txt",
-                                                 filetypes=[("Text files", "*.txt")])  # Запрос пути для сохранения
+        file_path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt")])  # Запрос пути для сохранения
         if file_path:  # Если путь выбран
             with open(file_path, "w", encoding="utf-8") as file:  # Открытие файла для записи
                 file.write(log_content)  # Запись лога в файл
@@ -422,8 +461,7 @@ class DocumentSorter:
         if not source_dir or not os.path.isdir(source_dir):  # Проверка корректности пути
             messagebox.showerror(_("Error"), _("Please select a valid source directory"))  # Ошибка, если путь неверный
             return
-        backup_path = filedialog.asksaveasfilename(defaultextension=".zip", filetypes=[("ZIP files", "*.zip")],
-                                                   title=_("Save Backup As"))  # Запрос пути для архива
+        backup_path = filedialog.asksaveasfilename(defaultextension=".zip", filetypes=[("ZIP files", "*.zip")], title=_("Save Backup As"))  # Запрос пути для архива
         if backup_path:  # Если путь выбран
             try:
                 with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:  # Создание ZIP-архива
@@ -448,12 +486,10 @@ class DocumentSorter:
             messagebox.showerror(_("Error"), _("Please select a valid source directory"))  # Ошибка, если путь неверный
             return
         if not dest_dir or not os.path.isdir(dest_dir):  # Проверка целевой папки
-            messagebox.showerror(_("Error"),
-                                 _("Please select a valid destination directory"))  # Ошибка, если путь неверный
+            messagebox.showerror(_("Error"), _("Please select a valid destination directory"))  # Ошибка, если путь неверный
             return
         if not self.auto_sort_var.get() and not self.category_list:  # Проверка наличия категорий
-            messagebox.showerror(_("Error"),
-                                 _("Please define at least one category or enable automatic sorting"))  # Ошибка при отсутствии категорий
+            messagebox.showerror(_("Error"), _("Please define at least one category or enable automatic sorting"))  # Ошибка при отсутствии категорий
             return
         try:
             self.max_depth = int(self.max_depth_var.get())  # Получение максимальной глубины подкатегорий
@@ -466,14 +502,13 @@ class DocumentSorter:
         self.backup_button.config(state=tk.DISABLED)  # Отключение кнопки резервного копирования
         self.is_processing = True  # Установка флага выполнения
         self.cancel_requested = False  # Сброс флага отмены
-        thread = threading.Thread(target=self.sort_documents,
-                                  args=(source_dir, dest_dir))  # Создание потока для сортировки
+        thread = threading.Thread(target=self.sort_documents, args=(self.source_dir_var.get(), self.dest_dir_var.get()))  # Создание потока для сортировки
         thread.daemon = True  # Установка потока как фонового
         thread.start()  # Запуск потока
 
     def get_file_hash(self, file_path):
         """
-        Вычисляет MD5-хэш файла для поиска дубликатов.
+        Вычисляет MD5-хэш файла для поиска дубликатов и кэширования.
 
         Аргументы:
             file_path (str): Путь к файлу.
@@ -495,18 +530,18 @@ class DocumentSorter:
             mode (str): Режим удаления дубликатов ("normal" — точное совпадение, "hardcore" — по имени и размеру).
 
         Возвращает:
-            list: Список уникальных файлов после удаления дубликатов.
+            tuple: Список уникальных файлов и количество удалённых дубликатов.
         """
         if mode == "none":  # Если режим "без удаления"
-            return files  # Возвращаем исходный список файлов
+            return files, 0  # Возвращаем исходный список файлов и 0 дубликатов
         file_info = {}  # Словарь для хранения информации о файлах
+        duplicates_count = 0  # Счётчик удалённых дубликатов
         for file_path in files:  # Обход всех файлов
             file_hash = self.get_file_hash(file_path)  # Вычисление хэша файла
             file_size = os.path.getsize(file_path)  # Получение размера файла
             mod_time = os.path.getmtime(file_path)  # Получение времени изменения
             file_name = os.path.basename(file_path)  # Получение имени файла
-            file_info[file_path] = {"hash": file_hash, "size": file_size, "mod_time": mod_time,
-                                    "name": file_name}  # Сохранение информации
+            file_info[file_path] = {"hash": file_hash, "size": file_size, "mod_time": mod_time, "name": file_name}  # Сохранение информации
         duplicates = {}  # Словарь для группировки дубликатов
         if mode == "normal":  # Обычный режим (точное совпадение по хэшу)
             for path, info in file_info.items():
@@ -523,16 +558,16 @@ class DocumentSorter:
         unique_files = []  # Список уникальных файлов
         for group in duplicates.values():  # Обход групп дубликатов
             if len(group) > 1:  # Если в группе больше одного файла
-                sorted_group = sorted(group, key=lambda x: file_info[x]["mod_time"],
-                                      reverse=True)  # Сортировка по времени (новые первыми)
+                sorted_group = sorted(group, key=lambda x: file_info[x]["mod_time"], reverse=True)  # Сортировка по времени (новые первыми)
                 keep_file = sorted_group[0]  # Оставляем самый новый файл
                 unique_files.append(keep_file)  # Добавление файла в список уникальных
+                duplicates_count += len(sorted_group) - 1  # Увеличение счётчика дубликатов
                 for duplicate in sorted_group[1:]:  # Удаление остальных дубликатов
                     os.remove(duplicate)  # Удаление файла
                     self.log_message(_(f"Removed duplicate: {os.path.basename(duplicate)}"))  # Логирование удаления
             else:
                 unique_files.append(group[0])  # Добавление единственного файла в группу
-        return unique_files  # Возвращение списка уникальных файлов
+        return unique_files, duplicates_count  # Возвращение списка уникальных файлов и числа дубликатов
 
     def generate_auto_categories(self, files):
         """
@@ -588,10 +623,8 @@ class DocumentSorter:
         for cat, subcats in categories.items():  # Обход категорий и их подкатегорий
             full_cat = f"{parent}/{cat}" if parent else cat  # Формирование полного пути категории
             self.category_list.append(full_cat)  # Добавление категории в список
-            cat_id = self.category_tree.insert(parent if parent else "", tk.END,
-                                               text=cat)  # Добавление категории в дерево
-            if isinstance(subcats, dict) and subcats and len(
-                    full_cat.split('/')) - 1 < self.max_depth:  # Проверка вложенности
+            cat_id = self.category_tree.insert(parent if parent else "", tk.END, text=cat)  # Добавление категории в дерево
+            if isinstance(subcats, dict) and subcats and len(full_cat.split('/')) - 1 < self.max_depth:  # Проверка вложенности
                 self._build_category_tree(subcats, cat_id)  # Рекурсивный вызов для подкатегорий
 
     def sort_documents(self, source_dir, dest_dir):
@@ -603,12 +636,12 @@ class DocumentSorter:
             dest_dir (str): Путь к целевой папке.
         """
         try:
+            start_time = time.time()  # Запись времени начала сортировки
             files = []  # Список файлов для сортировки
             if self.google_drive_service or self.dropbox_client:  # Если используется облако
                 files = self.get_cloud_files(source_dir)  # Получение файлов из облака
             else:
-                files = [os.path.join(source_dir, f) for f in os.listdir(source_dir) if
-                         os.path.isfile(os.path.join(source_dir, f))]  # Получение локальных файлов
+                files = [os.path.join(source_dir, f) for f in os.listdir(source_dir) if os.path.isfile(os.path.join(source_dir, f))]  # Получение локальных файлов
             if not files:  # Если файлов нет
                 self.log_message(_("No files found"))  # Логирование отсутствия файлов
                 self.complete_sorting()  # Завершение сортировки
@@ -621,9 +654,10 @@ class DocumentSorter:
                 os.makedirs(os.path.join(dest_dir, category), exist_ok=True)  # Создание директории, если её нет
 
             dedupe_mode = self.dedupe_mode.get()  # Получение режима удаления дубликатов
-            files = self.find_and_remove_duplicates(files, dedupe_mode)  # Удаление дубликатов
+            files, duplicates_removed = self.find_and_remove_duplicates(files, dedupe_mode)  # Удаление дубликатов
             self.log_message(_(f"After deduplication: {len(files)} files remain"))  # Логирование оставшихся файлов
 
+            processed_files = 0  # Счётчик обработанных файлов
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:  # Создание пула потоков
                 futures = []  # Список задач для выполнения
                 for file_path in files:  # Обход файлов
@@ -634,14 +668,54 @@ class DocumentSorter:
                 for i, future in enumerate(concurrent.futures.as_completed(futures)):  # Обработка завершённых задач
                     if self.cancel_requested:  # Проверка запроса отмены
                         break
+                    processed_files += 1  # Увеличение счётчика обработанных файлов
                     progress = (i + 1) / len(files) * 100  # Вычисление прогресса
                     self.progress_var.set(progress)  # Обновление прогресс-бара
                     self.root.update_idletasks()  # Обновление интерфейса
-            self.log_message(_("Sorting completed"))  # Логирование завершения сортировки
+
+            # Подсчёт статистики
+            end_time = time.time()  # Запись времени окончания
+            elapsed_time = end_time - start_time  # Вычисление времени выполнения
+            unique_categories = len(set(self.category_list))  # Подсчёт уникальных категорий
+            stats = {
+                "processed_files": processed_files,
+                "categories_used": unique_categories,
+                "duplicates_removed": duplicates_removed,
+                "elapsed_time": f"{elapsed_time:.2f} seconds"
+            }
+            self.log_message(_(f"Sorting completed. Processed: {processed_files}, Categories: {unique_categories}, "
+                              f"Duplicates Removed: {duplicates_removed}, Time: {elapsed_time:.2f} seconds"))
+            self.generate_report(stats)  # Генерация HTML-отчёта
         except Exception as e:
             self.log_message(_(f"Sorting error: {str(e)}"))  # Логирование ошибки
         finally:
             self.complete_sorting()  # Завершение сортировки
+
+    def generate_report(self, stats):
+        """
+        Генерирует HTML-отчёт со статистикой сортировки.
+
+        Аргументы:
+            stats (dict): Словарь со статистикой (обработанные файлы, категории, дубликаты, время).
+        """
+        env = Environment(loader=FileSystemLoader('.'))  # Настройка Jinja2 с загрузкой шаблонов из текущей папки
+        template = env.from_string("""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Sorting Report</title></head>
+        <body>
+            <h1>Sorting Report</h1>
+            <p><strong>Processed Files:</strong> {{ stats.processed_files }}</p>
+            <p><strong>Categories Used:</strong> {{ stats.categories_used }}</p>
+            <p><strong>Duplicates Removed:</strong> {{ stats.duplicates_removed }}</p>
+            <p><strong>Elapsed Time:</strong> {{ stats.elapsed_time }}</p>
+        </body>
+        </html>
+        """)  # Простой HTML-шаблон
+        report_html = template.render(stats=stats)  # Рендеринг отчёта с данными
+        with open("report.html", "w", encoding="utf-8") as f:  # Сохранение отчёта в файл
+            f.write(report_html)  # Запись HTML
+        self.log_message(_("Report generated: report.html"))  # Логирование создания отчёта
 
     def get_cloud_files(self, source_dir):
         """
@@ -700,7 +774,7 @@ class DocumentSorter:
 
     def classify_file(self, file_info):
         """
-        Классифицирует файл с помощью Ollama и возвращает категорию.
+        Классифицирует файл с помощью Ollama и возвращает категорию, используя кэш.
 
         Аргументы:
             file_info (dict): Информация о файле (имя, расширение, размер).
@@ -708,19 +782,32 @@ class DocumentSorter:
         Возвращает:
             str: Название категории для файла.
         """
+        file_path = os.path.join(self.source_dir_var.get(), file_info["filename"])  # Полный путь к файлу
+        file_hash = self.get_file_hash(file_path)  # Вычисление хэша файла
+        if file_hash in self.cache:  # Проверка наличия файла в кэше
+            self.log_message(_(f"Using cached category for '{file_info['filename']}'"))  # Логирование использования кэша
+            return self.cache[file_hash]  # Возвращение категории из кэша
+
         try:
+            # Ограничение чтения до 10 КБ для больших файлов
+            with open(file_path, 'rb') as f:  # Открытие файла в бинарном режиме
+                content_sample = f.read(10240).decode('utf-8', errors='ignore')  # Чтение первых 10 КБ
             prompt = f"""
             {_('Classify the file into ONE of these categories:')} {', '.join(self.category_list)}
             {_('File:')} {file_info['filename']}
             {_('Extension:')} {file_info['extension']}
             {_('Size:')} {file_info['size_bytes']} {_('bytes')}
+            {_('Content Sample:')} {content_sample[:1000]}  # Ограничение до 1000 символов
             {_('Respond with ONLY the category name.')}
-            """  # Формирование запроса для Ollama
+            """  # Формирование запроса для Ollama с учётом содержимого
             response = requests.post(f"{self.ollama_url}/generate",
                                      json={"model": self.model, "prompt": prompt, "stream": False})  # Отправка запроса
             if response.status_code == 200:  # Если запрос успешен
                 category = response.json().get("response", "").strip()  # Получение категории из ответа
-                return category if category in self.category_list else self.category_list[0]  # Проверка категории
+                if category in self.category_list:  # Проверка валидности категории
+                    self.cache[file_hash] = category  # Сохранение в кэш
+                    self.save_cache()  # Обновление файла кэша
+                    return category
             return self.category_list[0]  # Возвращение категории по умолчанию при ошибке
         except Exception as e:
             self.log_message(_(f"Classification error: {str(e)}"))  # Логирование ошибки
@@ -734,6 +821,7 @@ class DocumentSorter:
         self.sort_button.config(state=tk.NORMAL)  # Включение кнопки сортировки
         self.backup_button.config(state=tk.NORMAL)  # Включение кнопки резервного копирования
         self.progress_var.set(0)  # Сброс прогресс-бара
+        self.save_config()  # Сохранение настроек после сортировки
 
 
 def main():
@@ -743,15 +831,14 @@ def main():
     parser = argparse.ArgumentParser(description="Document Sorter")  # Инициализация парсера аргументов
     parser.add_argument("--source", help="Source directory")  # Аргумент для исходной папки
     parser.add_argument("--dest", help="Destination directory")  # Аргумент для целевой папки
-    parser.add_argument("--categories",
-                        help="Comma-separated categories (disables auto-sorting if provided)")  # Аргумент для категорий
-    parser.add_argument("--dedupe", choices=["none", "normal", "hardcore"], default="none",
-                        help="Duplicate removal mode")  # Аргумент для режима дубликатов
+    parser.add_argument("--categories", help="Comma-separated categories (disables auto-sorting if provided)")  # Аргумент для категорий
+    parser.add_argument("--dedupe", choices=["none", "normal", "hardcore"], default="none", help="Duplicate removal mode")  # Аргумент для режима дубликатов
+    parser.add_argument("--ollama-url", default="http://localhost:11434/api", help="URL for Ollama API")  # Аргумент для URL Ollama
     args = parser.parse_args()  # Парсинг аргументов
 
     if args.source and args.dest:  # Если указаны исходная и целевая папки
         root = TkinterDnD.Tk()  # Создание окна с поддержкой Drag-and-Drop
-        sorter = DocumentSorter(root)  # Инициализация сортировщика
+        sorter = DocumentSorter(root, ollama_url=args.ollama_url)  # Инициализация сортировщика с заданным URL
         sorter.source_dir_var.set(args.source)  # Установка исходной папки
         sorter.dest_dir_var.set(args.dest)  # Установка целевой папки
         if args.categories:  # Если категории указаны через аргументы
@@ -762,11 +849,9 @@ def main():
                 parent = ""  # Идентификатор родителя
                 for part in parts:  # Обход частей пути
                     full_part = f"{parent}/{part}" if parent else part  # Формирование полного пути
-                    if full_part not in [sorter.category_tree.item(i, "text") for i in
-                                         sorter.category_tree.get_children(parent)]:  # Проверка уникальности
-                        parent_id = sorter.category_tree.insert(parent if parent else "", tk.END,
-                                                                text=part)  # Добавление в дерево
-                        parent = parent_id if parent else parent_id  # Обновление родителя
+                    if full_part not in [sorter.category_tree.item(i, "text") for i in sorter.category_tree.get_children(parent)]:
+                        parent_id = sorter.category_tree.insert(parent if parent else "", tk.END, text=part)
+                        parent = parent_id if parent else parent_id
         sorter.dedupe_mode.set(args.dedupe)  # Установка режима дубликатов
         sorter.sort_documents(args.source, args.dest)  # Запуск сортировки
     else:
