@@ -15,8 +15,6 @@ import locale
 import subprocess
 import sys
 import argparse
-import traceback
-from functools import partial
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -53,7 +51,7 @@ _ = setup_localization("en")  # Функция перевода по умолч�
 
 class DocumentSorter:
     """
-    Класс для сортировки документов с использованием модели Ollama и дополнительных функций.
+    Класс для сортировки документов с использованием модели Ollama и дополнительных функций, включая удаление дубликатов.
 
     Атрибуты:
         root (tk.Tk): Корневое окно Tkinter.
@@ -163,6 +161,15 @@ class DocumentSorter:
         ttk.Button(category_buttons_frame, text=_("Add Subcategory"), command=self.add_subcategory).pack(side=tk.LEFT, padx=5)
         ttk.Button(category_buttons_frame, text=_("Remove"), command=self.remove_category).pack(side=tk.LEFT, padx=5)
 
+        # Настройки удаления дубликатов
+        dedupe_frame = ttk.LabelFrame(main_frame, text=_("Duplicate Removal Options"), padding="10")
+        dedupe_frame.pack(fill=tk.X, pady=10)
+
+        self.dedupe_mode = tk.StringVar(value="none")
+        ttk.Radiobutton(dedupe_frame, text=_("No Deduplication"), value="none", variable=self.dedupe_mode).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(dedupe_frame, text=_("Normal (Exact Matches)"), value="normal", variable=self.dedupe_mode).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(dedupe_frame, text=_("Hardcore (Similar Files)"), value="hardcore", variable=self.dedupe_mode).pack(side=tk.LEFT, padx=5)
+
         # Лог
         log_frame = ttk.LabelFrame(main_frame, text=_("Log"), padding="10")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -206,7 +213,7 @@ class DocumentSorter:
         Подключается к Google Drive через OAuth.
         """
         try:
-            creds = service_account.Credentials.from_service_account_file(" credentials.json", scopes=["https://www.googleapis.com/auth/drive"])
+            creds = service_account.Credentials.from_service_account_file("credentials.json", scopes=["https://www.googleapis.com/auth/drive"])
             self.google_drive_service = build('drive', 'v3', credentials=creds)
             self.log_message(_("Connected to Google Drive"))
         except Exception as e:
@@ -411,9 +418,84 @@ class DocumentSorter:
         thread.daemon = True
         thread.start()
 
+    def get_file_hash(self, file_path):
+        """
+        Вычисляет хэш MD5 файла для поиска дубликатов.
+
+        Аргументы:
+            file_path (str): Путь к файлу.
+
+        Возвращает:
+            str: Хэш файла.
+        """
+        hasher = hashlib.md5()
+        with open(file_path, 'rb') as f:
+            hasher.update(f.read())
+        return hasher.hexdigest()
+
+    def find_and_remove_duplicates(self, files, mode="normal"):
+        """
+        Находит и удаляет дубликаты файлов в зависимости от выбранного режима.
+
+        Аргументы:
+            files (list): Список путей к файлам.
+            mode (str): Режим удаления дубликатов ("normal" или "hardcore").
+
+        Возвращает:
+            list: Список файлов после удаления дубликатов.
+        """
+        if mode == "none":
+            return files
+
+        file_info = {}
+        for file_path in files:
+            file_hash = self.get_file_hash(file_path)
+            file_size = os.path.getsize(file_path)
+            mod_time = os.path.getmtime(file_path)
+            file_name = os.path.basename(file_path)
+            file_info[file_path] = {
+                "hash": file_hash,
+                "size": file_size,
+                "mod_time": mod_time,
+                "name": file_name
+            }
+
+        # Группировка файлов
+        duplicates = {}
+        if mode == "normal":
+            # Только абсолютно идентичные файлы (одинаковый хэш)
+            for path, info in file_info.items():
+                key = info["hash"]
+                if key not in duplicates:
+                    duplicates[key] = []
+                duplicates[key].append(path)
+        elif mode == "hardcore":
+            # Файлы с одинаковым именем и размером (допускается разная чексумма)
+            for path, info in file_info.items():
+                key = (info["name"], info["size"])
+                if key not in duplicates:
+                    duplicates[key] = []
+                duplicates[key].append(path)
+
+        # Удаление дубликатов, оставляя самый новый файл
+        unique_files = []
+        for group in duplicates.values():
+            if len(group) > 1:
+                # Сортировка по времени изменения (от нового к старому)
+                sorted_group = sorted(group, key=lambda x: file_info[x]["mod_time"], reverse=True)
+                keep_file = sorted_group[0]  # Оставляем самый новый
+                unique_files.append(keep_file)
+                for duplicate in sorted_group[1:]:  # Удаляем остальные
+                    os.remove(duplicate)
+                    self.log_message(_(f"Removed duplicate: {os.path.basename(duplicate)}"))
+            else:
+                unique_files.append(group[0])
+
+        return unique_files
+
     def sort_documents(self, source_dir, dest_dir, categories):
         """
-        Сортирует документы из локального или облачного источника.
+        Сортирует документы из локального или облачного источника с удалением дубликатов.
         """
         try:
             files = []
@@ -428,6 +510,11 @@ class DocumentSorter:
                 return
 
             self.log_message(_(f"Found {len(files)} files to process"))
+
+            # Удаление дубликатов перед сортировкой
+            dedupe_mode = self.dedupe_mode.get()
+            files = self.find_and_remove_duplicates(files, dedupe_mode)
+            self.log_message(_(f"After deduplication: {len(files)} files remain"))
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                 futures = []
@@ -541,6 +628,7 @@ def main():
     parser.add_argument("--source", help="Source directory")
     parser.add_argument("--dest", help="Destination directory")
     parser.add_argument("--categories", help="Comma-separated categories")
+    parser.add_argument("--dedupe", choices=["none", "normal", "hardcore"], default="none", help="Duplicate removal mode")
     args = parser.parse_args()
 
     if args.source and args.dest and args.categories:
@@ -549,6 +637,7 @@ def main():
         sorter.source_dir_var.set(args.source)
         sorter.dest_dir_var.set(args.dest)
         sorter.category_list = categories
+        sorter.dedupe_mode.set(args.dedupe)
         sorter.sort_documents(args.source, args.dest, categories)
     else:
         root = tk.Tk()
