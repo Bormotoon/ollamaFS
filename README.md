@@ -35,7 +35,7 @@ removal, automatic category generation, and a user-friendly GUI built with Tkint
 
    bash
 
-WrapCopy
+
 
 `python -m venv venv source venv/bin/activate # Linux/Mac venv\Scripts\activate # Windows`
 
@@ -43,7 +43,7 @@ WrapCopy
 
    bash
 
-WrapCopy
+
 
 `pip install -r requirements.txt`
 
@@ -58,7 +58,7 @@ WrapCopy
 
   bash
 
-  WrapCopy
+  
 
   `python main.py`
 
@@ -78,7 +78,7 @@ WrapCopy
 
   bash
 
-  WrapCopy
+  
 
   `python main.py --source /path/to/source --dest /path/to/dest --categories "Docs,Images" --dedupe normal`
 
@@ -141,7 +141,7 @@ Ollama. Поддерживает работу с локальными файла
 
    bash
 
-WrapCopy
+
 
 `git clone https://github.com/yourusername/document-sorter-ollama.git cd document-sorter-ollama`
 
@@ -149,7 +149,7 @@ WrapCopy
 
    bash
 
-WrapCopy
+
 
 `python -m venv venv source venv/bin/activate # Linux/Mac venv\Scripts\activate # Windows`
 
@@ -157,7 +157,7 @@ WrapCopy
 
    bash
 
-WrapCopy
+
 
 `pip install -r requirements.txt`
 
@@ -172,7 +172,7 @@ WrapCopy
 
   bash
 
-  WrapCopy
+  
 
   `python main.py`
 
@@ -192,7 +192,7 @@ WrapCopy
 
   bash
 
-  WrapCopy
+  
 
   `python main.py --source /путь/к/исходной --dest /путь/к/целевой --categories "Документы,Изображения" --dedupe normal`
 
