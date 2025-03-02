@@ -12,9 +12,12 @@ import tkinter as tk  # Базовый модуль для создания GUI
 import zipfile  # Для создания резервных копий в ZIP-формате
 from tkinter import filedialog, ttk, messagebox, simpledialog  # Компоненты Tkinter для интерфейса
 from jinja2 import Environment, FileSystemLoader  # Для генерации HTML-отчётов
+import logging  # Для улучшенного логирования
+from logging.handlers import RotatingFileHandler  # Для ротации логов
 
 import PyPDF2  # Для работы с PDF-файлами
 import docx  # Для работы с DOCX-файлами
+import openpyxl  # Для работы с XLSX-файлами
 import requests  # Для взаимодействия с API Ollama
 from dropbox import Dropbox  # Для интеграции с Dropbox
 from dropbox.exceptions import ApiError, AuthError  # Обработка ошибок Dropbox
@@ -27,6 +30,16 @@ from odf import text, teletype  # Для работы с OpenDocument форма
 from tkinterdnd2 import *  # Поддержка Drag-and-Drop в Tkinter
 
 locale.setlocale(locale.LC_ALL, '')  # Настройка локали для корректного отображения дат и текста
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,  # Установка уровня логирования по умолчанию
+    format='%(asctime)s - %(levelname)s - %(message)s',  # Формат сообщений
+    handlers=[
+        RotatingFileHandler('sorter.log', maxBytes=1024*1024, backupCount=3)  # Ротация: 1 МБ, 3 файла
+    ]
+)
+logger = logging.getLogger(__name__)  # Создание логгера
 
 
 def setup_localization(lang="en"):
@@ -64,6 +77,7 @@ class DocumentSorter:
         language (str): Текущий язык интерфейса.
         google_drive_service (Any): Сервис Google Drive API или None.
         dropbox_client (Dropbox): Клиент Dropbox API или None.
+        is_paused (bool): Флаг приостановки сортировки.
     """
 
     def __init__(self, root, ollama_url="http://localhost:11434/api"):
@@ -87,6 +101,7 @@ class DocumentSorter:
         self.language = "en"  # Язык интерфейса по умолчанию
         self.google_drive_service = None  # Сервис Google Drive (пока не подключён)
         self.dropbox_client = None  # Клиент Dropbox (пока не подключён)
+        self.is_paused = False  # Флаг приостановки сортировки
 
         self.setup_ui()  # Настройка пользовательского интерфейса
         self.load_config()  # Загрузка пользовательских настроек
@@ -258,6 +273,10 @@ class DocumentSorter:
         button_frame.pack(fill=tk.X, pady=10)  # Размещение фрейма
         self.sort_button = ttk.Button(button_frame, text=_("Start Sorting"), command=self.start_sorting)  # Кнопка запуска сортировки
         self.sort_button.pack(side=tk.RIGHT, padx=5)  # Размещение кнопки
+        self.pause_button = ttk.Button(button_frame, text=_("Pause"), command=self.pause_sorting, state=tk.DISABLED)  # Кнопка приостановки
+        self.pause_button.pack(side=tk.RIGHT, padx=5)  # Размещение кнопки
+        self.cancel_button = ttk.Button(button_frame, text=_("Cancel"), command=self.cancel_sorting, state=tk.DISABLED)  # Кнопка отмены
+        self.cancel_button.pack(side=tk.RIGHT, padx=5)  # Размещение кнопки
         self.backup_button = ttk.Button(button_frame, text=_("Create Backup"), command=self.create_backup)  # Кнопка создания резервной копии
         self.backup_button.pack(side=tk.RIGHT, padx=5)  # Размещение кнопки
 
@@ -301,9 +320,11 @@ class DocumentSorter:
             creds = service_account.Credentials.from_service_account_file("credentials.json", scopes=["https://www.googleapis.com/auth/drive"])
             # Загрузка учётных данных из файла credentials.json
             self.google_drive_service = build('drive', 'v3', credentials=creds)  # Инициализация сервиса Google Drive
-            self.log_message(_("Connected to Google Drive"))  # Сообщение об успешном подключении
+            logger.info(_("Connected to Google Drive"))  # Сообщение об успешном подключении
+            self.log_message(_("Connected to Google Drive"))  # Вывод в GUI
         except Exception as e:
-            self.log_message(_(f"Google Drive connection error: {str(e)}"))  # Сообщение об ошибке подключения
+            logger.error(_(f"Google Drive connection error: {str(e)}"))  # Логирование ошибки
+            self.log_message(_(f"Google Drive connection error: {str(e)}"))  # Вывод в GUI
 
     def connect_dropbox(self):
         """
@@ -313,9 +334,11 @@ class DocumentSorter:
         if token:  # Если токен введён
             try:
                 self.dropbox_client = Dropbox(token)  # Инициализация клиента Dropbox
-                self.log_message(_("Connected to Dropbox"))  # Сообщение об успешном подключении
+                logger.info(_("Connected to Dropbox"))  # Сообщение об успешном подключении
+                self.log_message(_("Connected to Dropbox"))  # Вывод в GUI
             except AuthError as e:
-                self.log_message(_(f"Dropbox authentication error: {str(e)}"))  # Сообщение об ошибке аутентификации
+                logger.error(_(f"Dropbox authentication error: {str(e)}"))  # Логирование ошибки
+                self.log_message(_(f"Dropbox authentication error: {str(e)}"))  # Вывод в GUI
 
     def handle_drop(self, event):
         """
@@ -327,7 +350,8 @@ class DocumentSorter:
         dropped = event.data  # Получение данных о сброшенном объекте
         if os.path.isdir(dropped):  # Проверка, является ли объект папкой
             self.source_dir_var.set(dropped)  # Установка пути в переменную исходной папки
-            self.log_message(_(f"Dropped directory: {dropped}"))  # Логирование события
+            logger.info(_(f"Dropped directory: {dropped}"))  # Логирование события
+            self.log_message(_(f"Dropped directory: {dropped}"))  # Вывод в GUI
             self.save_config()  # Сохранение настроек после изменения
 
     def check_ollama_status(self):
@@ -341,8 +365,10 @@ class DocumentSorter:
                 self.fetch_models()  # Обновление списка моделей
             else:
                 self.status_label.config(text=_("Error: API not responding"), foreground="red")  # Установка статуса ошибки
+                logger.warning(_(f"Ollama API not responding: {response.status_code}"))  # Логирование предупреждения
         except requests.exceptions.ConnectionError:
             self.status_label.config(text=_("Disconnected (Is Ollama running?)"), foreground="red")  # Статус "Отключено"
+            logger.error(_("Cannot connect to Ollama"))  # Логирование ошибки
             self.root.after(5000, self.check_ollama_status)  # Повторная проверка через 5 секунд
 
     def fetch_models(self):
@@ -361,7 +387,8 @@ class DocumentSorter:
                     self.model_combobox.set(self.available_models[0])  # Установка первой доступной модели
                     self.model = self.available_models[0]  # Обновление текущей модели
         except requests.exceptions.ConnectionError:
-            self.log_message(_("Cannot connect to Ollama"))  # Сообщение об ошибке подключения
+            logger.error(_("Cannot connect to Ollama"))  # Логирование ошибки
+            self.log_message(_("Cannot connect to Ollama"))  # Вывод в GUI
 
     def on_model_selected(self, event):
         """
@@ -371,7 +398,8 @@ class DocumentSorter:
             event: Событие выбора элемента в Combobox.
         """
         self.model = self.model_combobox.get()  # Получение выбранной модели
-        self.log_message(_(f"Selected model: {self.model}"))  # Логирование выбора модели
+        logger.info(_(f"Selected model: {self.model}"))  # Логирование выбора модели
+        self.log_message(_(f"Selected model: {self.model}"))  # Вывод в GUI
 
     def browse_source_dir(self):
         """
@@ -432,7 +460,7 @@ class DocumentSorter:
 
     def log_message(self, message):
         """
-        Добавляет сообщение в лог с временной меткой.
+        Добавляет сообщение в лог с временной меткой для вывода в GUI.
 
         Аргументы:
             message (str): Текст сообщения для добавления в лог.
@@ -451,7 +479,8 @@ class DocumentSorter:
         if file_path:  # Если путь выбран
             with open(file_path, "w", encoding="utf-8") as file:  # Открытие файла для записи
                 file.write(log_content)  # Запись лога в файл
-            self.log_message(_(f"Log saved to {file_path}"))  # Логирование успешного сохранения
+            logger.info(_(f"Log saved to {file_path}"))  # Логирование успешного сохранения
+            self.log_message(_(f"Log saved to {file_path}"))  # Вывод в GUI
 
     def create_backup(self):
         """
@@ -470,9 +499,11 @@ class DocumentSorter:
                             file_path = os.path.join(root, file)  # Формирование полного пути к файлу
                             arcname = os.path.relpath(file_path, source_dir)  # Относительный путь для архива
                             zipf.write(file_path, arcname)  # Добавление файла в архив
-                self.log_message(_(f"Backup created at {backup_path}"))  # Логирование успешного создания
+                logger.info(_(f"Backup created at {backup_path}"))  # Логирование успешного создания
+                self.log_message(_(f"Backup created at {backup_path}"))  # Вывод в GUI
             except Exception as e:
-                self.log_message(_(f"Backup error: {str(e)}"))  # Логирование ошибки
+                logger.error(_(f"Backup error: {str(e)}"))  # Логирование ошибки
+                self.log_message(_(f"Backup error: {str(e)}"))  # Вывод в GUI
 
     def start_sorting(self):
         """
@@ -500,11 +531,34 @@ class DocumentSorter:
             return
         self.sort_button.config(state=tk.DISABLED)  # Отключение кнопки сортировки
         self.backup_button.config(state=tk.DISABLED)  # Отключение кнопки резервного копирования
+        self.pause_button.config(state=tk.NORMAL)  # Включение кнопки приостановки
+        self.cancel_button.config(state=tk.NORMAL)  # Включение кнопки отмены
         self.is_processing = True  # Установка флага выполнения
         self.cancel_requested = False  # Сброс флага отмены
+        self.is_paused = False  # Сброс флага приостановки
         thread = threading.Thread(target=self.sort_documents, args=(self.source_dir_var.get(), self.dest_dir_var.get()))  # Создание потока для сортировки
         thread.daemon = True  # Установка потока как фонового
         thread.start()  # Запуск потока
+
+    def pause_sorting(self):
+        """
+        Приостанавливает или возобновляет процесс сортировки.
+        """
+        if self.is_processing:  # Если сортировка идёт
+            self.is_paused = not self.is_paused  # Переключение состояния приостановки
+            self.pause_button.config(text=_("Resume") if self.is_paused else _("Pause"))  # Обновление текста кнопки
+            logger.info(_("Sorting paused") if self.is_paused else _("Sorting resumed"))  # Логирование состояния
+            self.log_message(_("Sorting paused") if self.is_paused else _("Sorting resumed"))  # Вывод в GUI
+
+    def cancel_sorting(self):
+        """
+        Отменяет процесс сортировки после подтверждения пользователя.
+        """
+        if self.is_processing:  # Если сортировка идёт
+            if messagebox.askyesno(_("Confirm"), _("Are you sure you want to cancel sorting?")):  # Запрос подтверждения
+                self.cancel_requested = True  # Установка флага отмены
+                logger.info(_("Cancel requested"))  # Логирование запроса отмены
+                self.log_message(_("Cancel requested"))  # Вывод в GUI
 
     def get_file_hash(self, file_path):
         """
@@ -564,7 +618,8 @@ class DocumentSorter:
                 duplicates_count += len(sorted_group) - 1  # Увеличение счётчика дубликатов
                 for duplicate in sorted_group[1:]:  # Удаление остальных дубликатов
                     os.remove(duplicate)  # Удаление файла
-                    self.log_message(_(f"Removed duplicate: {os.path.basename(duplicate)}"))  # Логирование удаления
+                    logger.info(_(f"Removed duplicate: {os.path.basename(duplicate)}"))  # Логирование удаления
+                    self.log_message(_(f"Removed duplicate: {os.path.basename(duplicate)}"))  # Вывод в GUI
             else:
                 unique_files.append(group[0])  # Добавление единственного файла в группу
         return unique_files, duplicates_count  # Возвращение списка уникальных файлов и числа дубликатов
@@ -602,13 +657,16 @@ class DocumentSorter:
             if response.status_code == 200:  # Если запрос успешен
                 categories = json.loads(response.json().get("response", "{}"))  # Парсинг ответа в JSON
                 self._build_category_tree(categories)  # Построение дерева категорий
-                self.log_message(_("Automatic categories generated by Ollama"))  # Логирование успешной генерации
+                logger.info(_("Automatic categories generated by Ollama"))  # Логирование успешной генерации
+                self.log_message(_("Automatic categories generated by Ollama"))  # Вывод в GUI
             else:
-                self.log_message(_(f"Failed to generate categories: {response.status_code}"))  # Логирование ошибки
+                logger.warning(_(f"Failed to generate categories: {response.status_code}"))  # Логирование предупреждения
+                self.log_message(_(f"Failed to generate categories: {response.status_code}"))  # Вывод в GUI
                 self.category_list = ["Default"]  # Установка категории по умолчанию
                 self.category_tree.insert("", tk.END, text="Default")  # Добавление категории в дерево
         except Exception as e:
-            self.log_message(_(f"Error generating categories: {str(e)}"))  # Логирование ошибки
+            logger.error(_(f"Error generating categories: {str(e)}"))  # Логирование ошибки
+            self.log_message(_(f"Error generating categories: {str(e)}"))  # Вывод в GUI
             self.category_list = ["Default"]  # Установка категории по умолчанию
             self.category_tree.insert("", tk.END, text="Default")  # Добавление категории в дерево
 
@@ -643,10 +701,12 @@ class DocumentSorter:
             else:
                 files = [os.path.join(source_dir, f) for f in os.listdir(source_dir) if os.path.isfile(os.path.join(source_dir, f))]  # Получение локальных файлов
             if not files:  # Если файлов нет
-                self.log_message(_("No files found"))  # Логирование отсутствия файлов
+                logger.warning(_("No files found"))  # Логирование отсутствия файлов
+                self.log_message(_("No files found"))  # Вывод в GUI
                 self.complete_sorting()  # Завершение сортировки
                 return
-            self.log_message(_(f"Found {len(files)} files to process"))  # Логирование количества файлов
+            logger.info(_(f"Found {len(files)} files to process"))  # Логирование количества файлов
+            self.log_message(_(f"Found {len(files)} files to process"))  # Вывод в GUI
 
             if self.auto_sort_var.get():  # Если включена автоматическая сортировка
                 self.generate_auto_categories(files)  # Генерация категорий
@@ -655,16 +715,25 @@ class DocumentSorter:
 
             dedupe_mode = self.dedupe_mode.get()  # Получение режима удаления дубликатов
             files, duplicates_removed = self.find_and_remove_duplicates(files, dedupe_mode)  # Удаление дубликатов
-            self.log_message(_(f"After deduplication: {len(files)} files remain"))  # Логирование оставшихся файлов
+            logger.info(_(f"After deduplication: {len(files)} files remain"))  # Логирование оставшихся файлов
+            self.log_message(_(f"After deduplication: {len(files)} files remain"))  # Вывод в GUI
 
             processed_files = 0  # Счётчик обработанных файлов
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:  # Создание пула потоков
                 futures = []  # Список задач для выполнения
                 for file_path in files:  # Обход файлов
                     if self.cancel_requested:  # Проверка запроса отмены
-                        self.log_message(_("Sorting cancelled"))  # Логирование отмены
+                        logger.info(_("Sorting cancelled"))  # Логирование отмены
+                        self.log_message(_("Sorting cancelled"))  # Вывод в GUI
                         break
-                    futures.append(executor.submit(self.process_file, file_path, dest_dir))  # Добавление задачи в пул
+                    while self.is_paused:  # Ожидание при приостановке
+                        time.sleep(1)  # Задержка для снижения нагрузки
+                        if self.cancel_requested:  # Проверка отмены во время паузы
+                            logger.info(_("Sorting cancelled during pause"))  # Логирование отмены
+                            self.log_message(_("Sorting cancelled during pause"))  # Вывод в GUI
+                            break
+                    if not self.cancel_requested:  # Если не отменено
+                        futures.append(executor.submit(self.process_file, file_path, dest_dir))  # Добавление задачи в пул
                 for i, future in enumerate(concurrent.futures.as_completed(futures)):  # Обработка завершённых задач
                     if self.cancel_requested:  # Проверка запроса отмены
                         break
@@ -683,11 +752,14 @@ class DocumentSorter:
                 "duplicates_removed": duplicates_removed,
                 "elapsed_time": f"{elapsed_time:.2f} seconds"
             }
+            logger.info(_(f"Sorting completed. Processed: {processed_files}, Categories: {unique_categories}, "
+                          f"Duplicates Removed: {duplicates_removed}, Time: {elapsed_time:.2f} seconds"))  # Логирование статистики
             self.log_message(_(f"Sorting completed. Processed: {processed_files}, Categories: {unique_categories}, "
-                              f"Duplicates Removed: {duplicates_removed}, Time: {elapsed_time:.2f} seconds"))
+                              f"Duplicates Removed: {duplicates_removed}, Time: {elapsed_time:.2f} seconds"))  # Вывод в GUI
             self.generate_report(stats)  # Генерация HTML-отчёта
         except Exception as e:
-            self.log_message(_(f"Sorting error: {str(e)}"))  # Логирование ошибки
+            logger.error(_(f"Sorting error: {str(e)}"))  # Логирование ошибки
+            self.log_message(_(f"Sorting error: {str(e)}"))  # Вывод в GUI
         finally:
             self.complete_sorting()  # Завершение сортировки
 
@@ -715,7 +787,8 @@ class DocumentSorter:
         report_html = template.render(stats=stats)  # Рендеринг отчёта с данными
         with open("report.html", "w", encoding="utf-8") as f:  # Сохранение отчёта в файл
             f.write(report_html)  # Запись HTML
-        self.log_message(_("Report generated: report.html"))  # Логирование создания отчёта
+        logger.info(_("Report generated: report.html"))  # Логирование создания отчёта
+        self.log_message(_("Report generated: report.html"))  # Вывод в GUI
 
     def get_cloud_files(self, source_dir):
         """
@@ -761,7 +834,8 @@ class DocumentSorter:
         filename = os.path.basename(file_path)  # Получение имени файла
         file_info = {"filename": filename, "extension": os.path.splitext(filename)[1].lower(),
                      "size_bytes": os.path.getsize(file_path)}  # Формирование информации о файле
-        self.log_message(_(f"Processing: {filename}"))  # Логирование начала обработки
+        logger.info(_(f"Processing: {filename}"))  # Логирование начала обработки
+        self.log_message(_(f"Processing: {filename}"))  # Вывод в GUI
         category = self.classify_file(file_info)  # Классификация файла
         if category:  # Если категория определена
             dest_path = os.path.join(dest_dir, category, filename)  # Формирование пути назначения
@@ -770,7 +844,8 @@ class DocumentSorter:
                 base, ext = os.path.splitext(filename)  # Разделение имени и расширения
                 dest_path = os.path.join(dest_dir, category, f"{base}_copy{ext}")  # Добавление "_copy" к имени
             shutil.move(file_path, dest_path)  # Перемещение файла
-            self.log_message(_(f"Moved '{filename}' to '{category}'"))  # Логирование перемещения
+            logger.info(_(f"Moved '{filename}' to '{category}'"))  # Логирование перемещения
+            self.log_message(_(f"Moved '{filename}' to '{category}'"))  # Вывод в GUI
 
     def classify_file(self, file_info):
         """
@@ -785,13 +860,27 @@ class DocumentSorter:
         file_path = os.path.join(self.source_dir_var.get(), file_info["filename"])  # Полный путь к файлу
         file_hash = self.get_file_hash(file_path)  # Вычисление хэша файла
         if file_hash in self.cache:  # Проверка наличия файла в кэше
-            self.log_message(_(f"Using cached category for '{file_info['filename']}'"))  # Логирование использования кэша
+            logger.debug(_(f"Using cached category for '{file_info['filename']}'"))  # Логирование использования кэша (DEBUG)
+            self.log_message(_(f"Using cached category for '{file_info['filename']}'"))  # Вывод в GUI
             return self.cache[file_hash]  # Возвращение категории из кэша
 
         try:
-            # Ограничение чтения до 10 КБ для больших файлов
+            # Ограничение чтения до 10 КБ для больших файлов и обработка разных форматов
+            content_sample = ""
+            ext = file_info["extension"].lower()
             with open(file_path, 'rb') as f:  # Открытие файла в бинарном режиме
-                content_sample = f.read(10240).decode('utf-8', errors='ignore')  # Чтение первых 10 КБ
+                if ext == '.docx':  # Обработка DOCX
+                    doc = docx.Document(file_path)
+                    content_sample = "\n".join([p.text for p in doc.paragraphs][:5])  # Первые 5 абзацев
+                elif ext == '.pdf':  # Обработка PDF
+                    reader = PyPDF2.PdfReader(f)
+                    content_sample = "".join([reader.pages[i].extract_text() for i in range(min(5, len(reader.pages)))])  # Первые 5 страниц
+                elif ext == '.xlsx':  # Обработка XLSX
+                    wb = openpyxl.load_workbook(file_path)
+                    sheet = wb.active
+                    content_sample = " ".join([str(cell.value) for row in sheet.rows for cell in row if cell.value][:100])  # Первые 100 ячеек
+                else:  # Другие текстовые форматы
+                    content_sample = f.read(10240).decode('utf-8', errors='ignore')  # Чтение первых 10 КБ
             prompt = f"""
             {_('Classify the file into ONE of these categories:')} {', '.join(self.category_list)}
             {_('File:')} {file_info['filename']}
@@ -810,7 +899,8 @@ class DocumentSorter:
                     return category
             return self.category_list[0]  # Возвращение категории по умолчанию при ошибке
         except Exception as e:
-            self.log_message(_(f"Classification error: {str(e)}"))  # Логирование ошибки
+            logger.error(_(f"Classification error: {str(e)}"))  # Логирование ошибки
+            self.log_message(_(f"Classification error: {str(e)}"))  # Вывод в GUI
             return self.category_list[0]  # Возвращение категории по умолчанию
 
     def complete_sorting(self):
@@ -820,6 +910,8 @@ class DocumentSorter:
         self.is_processing = False  # Сброс флага выполнения
         self.sort_button.config(state=tk.NORMAL)  # Включение кнопки сортировки
         self.backup_button.config(state=tk.NORMAL)  # Включение кнопки резервного копирования
+        self.pause_button.config(state=tk.DISABLED, text=_("Pause"))  # Отключение кнопки приостановки и сброс текста
+        self.cancel_button.config(state=tk.DISABLED)  # Отключение кнопки отмены
         self.progress_var.set(0)  # Сброс прогресс-бара
         self.save_config()  # Сохранение настроек после сортировки
 
