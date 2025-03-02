@@ -14,11 +14,14 @@ from tkinter import filedialog, ttk, messagebox, simpledialog  # Компоне�
 from jinja2 import Environment, FileSystemLoader  # Для генерации HTML-отчётов
 import logging  # Для улучшенного логирования
 from logging.handlers import RotatingFileHandler  # Для ротации логов
+import asyncio  # Для асинхронных запросов
+import aiohttp  # Асинхронный HTTP-клиент
+from multiprocessing import Pool  # Для многопроцессорной обработки
 
 import PyPDF2  # Для работы с PDF-файлами
 import docx  # Для работы с DOCX-файлами
 import openpyxl  # Для работы с XLSX-файлами
-import requests  # Для взаимодействия с API Ollama
+from odf import text, teletype  # Для работы с OpenDocument форматами (.odt)
 from dropbox import Dropbox  # Для интеграции с Dropbox
 from dropbox.exceptions import ApiError, AuthError  # Обработка ошибок Dropbox
 from dropbox.files import WriteMode  # Режим записи файлов в Dropbox
@@ -26,8 +29,8 @@ from google.oauth2 import service_account  # Для аутентификации
 from googleapiclient.discovery import build  # Для работы с Google Drive API
 from googleapiclient.http import MediaIoBaseDownload  # Для скачивания файлов из Google Drive
 from langdetect import detect  # Для определения языка текста
-from odf import text, teletype  # Для работы с OpenDocument форматами
 from tkinterdnd2 import *  # Поддержка Drag-and-Drop в Tkinter
+import msal  # Для интеграции с OneDrive
 
 locale.setlocale(locale.LC_ALL, '')  # Настройка локали для корректного отображения дат и текста
 
@@ -77,6 +80,7 @@ class DocumentSorter:
         language (str): Текущий язык интерфейса.
         google_drive_service (Any): Сервис Google Drive API или None.
         dropbox_client (Dropbox): Клиент Dropbox API или None.
+        onedrive_client (Any): Клиент OneDrive API или None.
         is_paused (bool): Флаг приостановки сортировки.
     """
 
@@ -101,6 +105,7 @@ class DocumentSorter:
         self.language = "en"  # Язык интерфейса по умолчанию
         self.google_drive_service = None  # Сервис Google Drive (пока не подключён)
         self.dropbox_client = None  # Клиент Dropbox (пока не подключён)
+        self.onedrive_client = None  # Клиент OneDrive (пока не подключён)
         self.is_paused = False  # Флаг приостановки сортировки
 
         self.setup_ui()  # Настройка пользовательского интерфейса
@@ -110,6 +115,9 @@ class DocumentSorter:
         # Настройка Drag-and-Drop
         self.root.drop_target_register(DND_FILES)  # Регистрация окна для принятия файлов
         self.root.dnd_bind('<<Drop>>', self.handle_drop)  # Привязка обработчика события перетаскивания
+
+        # Настройка асинхронного клиента
+        self.loop = asyncio.get_event_loop()  # Получение цикла событий для асинхронности
 
     def load_cache(self):
         """
@@ -207,6 +215,7 @@ class DocumentSorter:
         cloud_frame.pack(fill=tk.X, pady=10)  # Размещение фрейма
         ttk.Button(cloud_frame, text=_("Connect Google Drive"), command=self.connect_google_drive).pack(side=tk.LEFT, padx=5)  # Кнопка Google Drive
         ttk.Button(cloud_frame, text=_("Connect Dropbox"), command=self.connect_dropbox).pack(side=tk.LEFT, padx=5)  # Кнопка Dropbox
+        ttk.Button(cloud_frame, text=_("Connect OneDrive"), command=self.connect_onedrive).pack(side=tk.LEFT, padx=5)  # Кнопка OneDrive
 
         # Фрейм выбора каталогов
         dir_frame = ttk.LabelFrame(main_frame, text=_("Directory Selection"), padding="10")  # Фрейм для выбора папок
@@ -339,6 +348,30 @@ class DocumentSorter:
             except AuthError as e:
                 logger.error(_(f"Dropbox authentication error: {str(e)}"))  # Логирование ошибки
                 self.log_message(_(f"Dropbox authentication error: {str(e)}"))  # Вывод в GUI
+
+    def connect_onedrive(self):
+        """
+        Подключает приложение к OneDrive через API.
+        """
+        client_id = simpledialog.askstring(_("OneDrive"), _("Enter OneDrive Client ID:"))  # Запрос Client ID
+        client_secret = simpledialog.askstring(_("OneDrive"), _("Enter OneDrive Client Secret:"))  # Запрос Client Secret
+        if client_id and client_secret:  # Если данные введены
+            try:
+                app = msal.ConfidentialClientApplication(
+                    client_id,
+                    authority="https://login.microsoftonline.com/common",
+                    client_credential=client_secret
+                )
+                result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+                if "access_token" in result:
+                    self.onedrive_client = {"token": result["access_token"]}  # Сохранение токена для OneDrive
+                    logger.info(_("Connected to OneDrive"))  # Сообщение об успешном подключении
+                    self.log_message(_("Connected to OneDrive"))  # Вывод в GUI
+                else:
+                    raise Exception("Authentication failed")
+            except Exception as e:
+                logger.error(_(f"OneDrive connection error: {str(e)}"))  # Логирование ошибки
+                self.log_message(_(f"OneDrive connection error: {str(e)}"))  # Вывод в GUI
 
     def handle_drop(self, event):
         """
@@ -577,7 +610,7 @@ class DocumentSorter:
 
     def find_and_remove_duplicates(self, files, mode="normal"):
         """
-        Находит и удаляет дубликаты файлов в зависимости от режима.
+        Находит и удаляет дубликаты файлов в зависимости от режима с использованием multiprocessing.
 
         Аргументы:
             files (list): Список путей к файлам.
@@ -588,14 +621,14 @@ class DocumentSorter:
         """
         if mode == "none":  # Если режим "без удаления"
             return files, 0  # Возвращаем исходный список файлов и 0 дубликатов
-        file_info = {}  # Словарь для хранения информации о файлах
+
+        # Использование multiprocessing для вычисления хэшей
+        with Pool(processes=4) as pool:  # Создание пула процессов (4 ядра)
+            file_info = dict(pool.map(lambda f: (f, {"hash": self.get_file_hash(f), "size": os.path.getsize(f),
+                                                     "mod_time": os.path.getmtime(f), "name": os.path.basename(f)}),
+                                     files))  # Вычисление информации о файлах параллельно
+
         duplicates_count = 0  # Счётчик удалённых дубликатов
-        for file_path in files:  # Обход всех файлов
-            file_hash = self.get_file_hash(file_path)  # Вычисление хэша файла
-            file_size = os.path.getsize(file_path)  # Получение размера файла
-            mod_time = os.path.getmtime(file_path)  # Получение времени изменения
-            file_name = os.path.basename(file_path)  # Получение имени файла
-            file_info[file_path] = {"hash": file_hash, "size": file_size, "mod_time": mod_time, "name": file_name}  # Сохранение информации
         duplicates = {}  # Словарь для группировки дубликатов
         if mode == "normal":  # Обычный режим (точное совпадение по хэшу)
             for path, info in file_info.items():
@@ -624,9 +657,9 @@ class DocumentSorter:
                 unique_files.append(group[0])  # Добавление единственного файла в группу
         return unique_files, duplicates_count  # Возвращение списка уникальных файлов и числа дубликатов
 
-    def generate_auto_categories(self, files):
+    async def async_generate_auto_categories(self, files):
         """
-        Генерирует категории автоматически с помощью Ollama на основе анализа файлов.
+        Асинхронно генерирует категории с помощью Ollama на основе анализа файлов.
 
         Аргументы:
             files (list): Список путей к файлам для анализа.
@@ -651,24 +684,26 @@ class DocumentSorter:
             "PDF": {{}}
         }}
         """  # Формирование запроса для Ollama
-        try:
-            response = requests.post(f"{self.ollama_url}/generate",
-                                     json={"model": self.model, "prompt": prompt, "stream": False})  # Отправка запроса
-            if response.status_code == 200:  # Если запрос успешен
-                categories = json.loads(response.json().get("response", "{}"))  # Парсинг ответа в JSON
-                self._build_category_tree(categories)  # Построение дерева категорий
-                logger.info(_("Automatic categories generated by Ollama"))  # Логирование успешной генерации
-                self.log_message(_("Automatic categories generated by Ollama"))  # Вывод в GUI
-            else:
-                logger.warning(_(f"Failed to generate categories: {response.status_code}"))  # Логирование предупреждения
-                self.log_message(_(f"Failed to generate categories: {response.status_code}"))  # Вывод в GUI
+        async with aiohttp.ClientSession() as session:  # Создание асинхронной сессии
+            try:
+                async with session.post(f"{self.ollama_url}/generate",
+                                       json={"model": self.model, "prompt": prompt, "stream": False}) as response:
+                    if response.status == 200:  # Если запрос успешен
+                        data = await response.json()  # Получение асинхронного ответа
+                        categories = json.loads(data.get("response", "{}"))  # Парсинг ответа в JSON
+                        self._build_category_tree(categories)  # Построение дерева категорий
+                        logger.info(_("Automatic categories generated by Ollama"))  # Логирование успешной генерации
+                        self.log_message(_("Automatic categories generated by Ollama"))  # Вывод в GUI
+                    else:
+                        logger.warning(_(f"Failed to generate categories: {response.status}"))  # Логирование предупреждения
+                        self.log_message(_(f"Failed to generate categories: {response.status}"))  # Вывод в GUI
+                        self.category_list = ["Default"]  # Установка категории по умолчанию
+                        self.category_tree.insert("", tk.END, text="Default")  # Добавление категории в дерево
+            except Exception as e:
+                logger.error(_(f"Error generating categories: {str(e)}"))  # Логирование ошибки
+                self.log_message(_(f"Error generating categories: {str(e)}"))  # Вывод в GUI
                 self.category_list = ["Default"]  # Установка категории по умолчанию
                 self.category_tree.insert("", tk.END, text="Default")  # Добавление категории в дерево
-        except Exception as e:
-            logger.error(_(f"Error generating categories: {str(e)}"))  # Логирование ошибки
-            self.log_message(_(f"Error generating categories: {str(e)}"))  # Вывод в GUI
-            self.category_list = ["Default"]  # Установка категории по умолчанию
-            self.category_tree.insert("", tk.END, text="Default")  # Добавление категории в дерево
 
     def _build_category_tree(self, categories, parent=""):
         """
@@ -696,8 +731,12 @@ class DocumentSorter:
         try:
             start_time = time.time()  # Запись времени начала сортировки
             files = []  # Список файлов для сортировки
-            if self.google_drive_service or self.dropbox_client:  # Если используется облако
-                files = self.get_cloud_files(source_dir)  # Получение файлов из облака
+            if self.google_drive_service:  # Если подключён Google Drive
+                files = self.get_cloud_files(source_dir, "google_drive")
+            elif self.dropbox_client:  # Если подключён Dropbox
+                files = self.get_cloud_files(source_dir, "dropbox")
+            elif self.onedrive_client:  # Если подключён OneDrive
+                files = self.get_cloud_files(source_dir, "onedrive")
             else:
                 files = [os.path.join(source_dir, f) for f in os.listdir(source_dir) if os.path.isfile(os.path.join(source_dir, f))]  # Получение локальных файлов
             if not files:  # Если файлов нет
@@ -709,7 +748,7 @@ class DocumentSorter:
             self.log_message(_(f"Found {len(files)} files to process"))  # Вывод в GUI
 
             if self.auto_sort_var.get():  # Если включена автоматическая сортировка
-                self.generate_auto_categories(files)  # Генерация категорий
+                asyncio.run_coroutine_threadsafe(self.async_generate_auto_categories(files), self.loop).result()  # Асинхронная генерация категорий
             for category in self.category_list:  # Создание папок для категорий
                 os.makedirs(os.path.join(dest_dir, category), exist_ok=True)  # Создание директории, если её нет
 
@@ -757,6 +796,10 @@ class DocumentSorter:
             self.log_message(_(f"Sorting completed. Processed: {processed_files}, Categories: {unique_categories}, "
                               f"Duplicates Removed: {duplicates_removed}, Time: {elapsed_time:.2f} seconds"))  # Вывод в GUI
             self.generate_report(stats)  # Генерация HTML-отчёта
+
+            # Синхронизация с облаком, если подключено
+            if self.google_drive_service or self.dropbox_client or self.onedrive_client:
+                self.sync_to_cloud(dest_dir)
         except Exception as e:
             logger.error(_(f"Sorting error: {str(e)}"))  # Логирование ошибки
             self.log_message(_(f"Sorting error: {str(e)}"))  # Вывод в GUI
@@ -790,12 +833,13 @@ class DocumentSorter:
         logger.info(_("Report generated: report.html"))  # Логирование создания отчёта
         self.log_message(_("Report generated: report.html"))  # Вывод в GUI
 
-    def get_cloud_files(self, source_dir):
+    def get_cloud_files(self, source_dir, service="local"):
         """
-        Получает файлы из облачных хранилищ (Google Drive или Dropbox).
+        Получает файлы из облачных хранилищ (Google Drive, Dropbox, OneDrive) или локально.
 
         Аргументы:
-            source_dir (str): Путь к папке в облаке.
+            source_dir (str): Путь к папке (локальной или в облаке).
+            service (str): Тип сервиса ("google_drive", "dropbox", "onedrive", "local").
 
         Возвращает:
             list: Список путей к скачанным файлам.
@@ -803,7 +847,8 @@ class DocumentSorter:
         files = []  # Список для хранения путей к файлам
         temp_dir = os.path.join(os.path.expanduser("~"), "DocumentSorterTemp")  # Временная папка для скачивания
         os.makedirs(temp_dir, exist_ok=True)  # Создание временной папки, если её нет
-        if self.google_drive_service:  # Если подключён Google Drive
+
+        if service == "google_drive" and self.google_drive_service:
             results = self.google_drive_service.files().list().execute()  # Получение списка файлов
             for file in results.get('files', []):  # Обход файлов
                 request = self.google_drive_service.files().get_media(fileId=file['id'])  # Запрос на скачивание
@@ -814,14 +859,78 @@ class DocumentSorter:
                     while not done:  # Пока загрузка не завершена
                         _, done = downloader.next_chunk()  # Скачивание следующей части файла
                 files.append(file_path)  # Добавление пути в список
-        elif self.dropbox_client:  # Если подключён Dropbox
+        elif service == "dropbox" and self.dropbox_client:
             result = self.dropbox_client.files_list_folder(source_dir)  # Получение списка файлов
             for entry in result.entries:  # Обход файлов
                 if isinstance(entry, dropbox.files.FileMetadata):  # Проверка, что это файл
                     file_path = os.path.join(temp_dir, entry.name)  # Путь для сохранения файла
                     self.dropbox_client.files_download_to_file(file_path, entry.path_lower)  # Скачивание файла
                     files.append(file_path)  # Добавление пути в список
+        elif service == "onedrive" and self.onedrive_client:
+            headers = {"Authorization": f"Bearer {self.onedrive_client['token']}"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://graph.microsoft.com/v1.0/me/drive/root:/Files:/children",
+                                       headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for item in data.get("value", []):
+                            if not item.get("folder"):  # Проверка, что это файл, а не папка
+                                file_path = os.path.join(temp_dir, item["name"])
+                                async with session.get(item["@microsoft.graph.downloadUrl"]) as file_resp:
+                                    if file_resp.status == 200:
+                                        with open(file_path, 'wb') as f:
+                                            f.write(await file_resp.read())
+                                files.append(file_path)
+        else:  # Локальные файлы
+            files = [os.path.join(source_dir, f) for f in os.listdir(source_dir) if os.path.isfile(os.path.join(source_dir, f))]
         return files  # Возвращение списка файлов
+
+    def sync_to_cloud(self, dest_dir):
+        """
+        Синхронизирует отсортированные файлы с облачным хранилищем.
+
+        Аргументы:
+            dest_dir (str): Путь к целевой папке для синхронизации.
+        """
+        if self.google_drive_service:
+            for root, dirs, files in os.walk(dest_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    relative_path = os.path.relpath(file_path, dest_dir)
+                    folder_id = "root"
+                    for folder in relative_path.split(os.sep)[:-1]:
+                        folder_metadata = {"name": folder, "mimeType": "application/vnd.google-apps.folder", "parents": [folder_id]}
+                        folder = self.google_drive_service.files().create(body=folder_metadata, fields='id').execute()
+                        folder_id = folder.get('id')
+                    file_metadata = {"name": os.path.basename(file_path), "parents": [folder_id]}
+                    media = MediaIoBaseDownload(open(file_path, 'rb'), file_path)
+                    self.google_drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+            logger.info(_("Synced to Google Drive"))  # Логирование синхронизации
+            self.log_message(_("Synced to Google Drive"))  # Вывод в GUI
+        elif self.dropbox_client:
+            for root, _, files in os.walk(dest_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    relative_path = os.path.relpath(file_path, dest_dir)
+                    dropbox_path = f"/Sorted/{relative_path}"
+                    with open(file_path, 'rb') as f:
+                        self.dropbox_client.files_upload(f.read(), dropbox_path, mode=WriteMode('overwrite'))
+            logger.info(_("Synced to Dropbox"))  # Логирование синхронизации
+            self.log_message(_("Synced to Dropbox"))  # Вывод в GUI
+        elif self.onedrive_client:
+            headers = {"Authorization": f"Bearer {self.onedrive_client['token']}"}
+            async with aiohttp.ClientSession() as session:
+                for root, _, files in os.walk(dest_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        relative_path = os.path.relpath(file_path, dest_dir)
+                        onedrive_path = f"/me/drive/root:/Sorted/{relative_path}:/content"
+                        with open(file_path, 'rb') as f:
+                            async with session.put(f"https://graph.microsoft.com/v1.0{onedrive_path}",
+                                                  headers=headers, data=f) as resp:
+                                if resp.status == 201:
+                                    logger.info(_(f"Synced {file} to OneDrive"))  # Логирование синхронизации файла
+                                    self.log_message(_(f"Synced {file} to OneDrive"))  # Вывод в GUI
 
     def process_file(self, file_path, dest_dir):
         """
@@ -836,7 +945,7 @@ class DocumentSorter:
                      "size_bytes": os.path.getsize(file_path)}  # Формирование информации о файле
         logger.info(_(f"Processing: {filename}"))  # Логирование начала обработки
         self.log_message(_(f"Processing: {filename}"))  # Вывод в GUI
-        category = self.classify_file(file_info)  # Классификация файла
+        category = asyncio.run_coroutine_threadsafe(self.async_classify_file(file_info), self.loop).result()  # Асинхронная классификация
         if category:  # Если категория определена
             dest_path = os.path.join(dest_dir, category, filename)  # Формирование пути назначения
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)  # Создание папки, если её нет
@@ -847,9 +956,9 @@ class DocumentSorter:
             logger.info(_(f"Moved '{filename}' to '{category}'"))  # Логирование перемещения
             self.log_message(_(f"Moved '{filename}' to '{category}'"))  # Вывод в GUI
 
-    def classify_file(self, file_info):
+    async def async_classify_file(self, file_info):
         """
-        Классифицирует файл с помощью Ollama и возвращает категорию, используя кэш.
+        Асинхронно классифицирует файл с помощью Ollama и возвращает категорию, используя кэш.
 
         Аргументы:
             file_info (dict): Информация о файле (имя, расширение, размер).
@@ -879,6 +988,9 @@ class DocumentSorter:
                     wb = openpyxl.load_workbook(file_path)
                     sheet = wb.active
                     content_sample = " ".join([str(cell.value) for row in sheet.rows for cell in row if cell.value][:100])  # Первые 100 ячеек
+                elif ext == '.odt':  # Обработка ODT
+                    doc = teletype.extractText(file_path)
+                    content_sample = doc[:1000]  # Первые 1000 символов
                 else:  # Другие текстовые форматы
                     content_sample = f.read(10240).decode('utf-8', errors='ignore')  # Чтение первых 10 КБ
             prompt = f"""
@@ -889,14 +1001,16 @@ class DocumentSorter:
             {_('Content Sample:')} {content_sample[:1000]}  # Ограничение до 1000 символов
             {_('Respond with ONLY the category name.')}
             """  # Формирование запроса для Ollama с учётом содержимого
-            response = requests.post(f"{self.ollama_url}/generate",
-                                     json={"model": self.model, "prompt": prompt, "stream": False})  # Отправка запроса
-            if response.status_code == 200:  # Если запрос успешен
-                category = response.json().get("response", "").strip()  # Получение категории из ответа
-                if category in self.category_list:  # Проверка валидности категории
-                    self.cache[file_hash] = category  # Сохранение в кэш
-                    self.save_cache()  # Обновление файла кэша
-                    return category
+            async with aiohttp.ClientSession() as session:  # Асинхронная сессия
+                async with session.post(f"{self.ollama_url}/generate",
+                                       json={"model": self.model, "prompt": prompt, "stream": False}) as response:
+                    if response.status == 200:  # Если запрос успешен
+                        data = await response.json()  # Асинхронное получение ответа
+                        category = data.get("response", "").strip()  # Получение категории
+                        if category in self.category_list:  # Проверка валидности категории
+                            self.cache[file_hash] = category  # Сохранение в кэш
+                            self.save_cache()  # Обновление файла кэша
+                            return category
             return self.category_list[0]  # Возвращение категории по умолчанию при ошибке
         except Exception as e:
             logger.error(_(f"Classification error: {str(e)}"))  # Логирование ошибки
