@@ -46,6 +46,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)  # Создание логгера
 
 
+def process_file_for_deduplication(file_path):
+	"""Обрабатывает файл для получения информации о нём в multiprocessing."""
+	hasher = hashlib.md5()
+	with open(file_path, 'rb') as f:
+		hasher.update(f.read())
+	return (file_path, {
+		"hash": hasher.hexdigest(),
+		"size": os.path.getsize(file_path),
+		"mod_time": os.path.getmtime(file_path),
+		"name": os.path.basename(file_path)
+	})
+
 def setup_localization(lang="en"):
 	"""
 	Настраивает локализацию приложения для поддержки нескольких языков.
@@ -663,104 +675,100 @@ class DocumentSorter:
 			hasher.update(f.read())  # Обновление хэша содержимым файла
 		return hasher.hexdigest()  # Возвращение хэша в шестнадцатеричном формате
 
+	def process_file(self, f):
+		"""Обрабатывает файл для получения информации о нём в multiprocessing."""
+		return (f, {
+			"hash": self.get_file_hash(f),
+			"size": os.path.getsize(f),
+			"mod_time": os.path.getmtime(f),
+			"name": os.path.basename(f)
+		})
+
 	def find_and_remove_duplicates(self, files, mode="normal"):
-		"""
-		Находит и удаляет дубликаты файлов в зависимости от режима с использованием multiprocessing.
+		"""Находит и удаляет дубликаты файлов в зависимости от режима с использованием multiprocessing."""
+		if mode == "none":
+			return files, 0
 
-		Аргументы:
-			files (list): Список путей к файлам.
-			mode (str): Режим удаления дубликатов ("normal" — точное совпадение, "hardcore" — по имени и размеру).
+		with Pool(processes=4) as pool:
+			file_info = dict(pool.map(process_file_for_deduplication, files))
 
-		Возвращает:
-			tuple: Список уникальных файлов и количество удалённых дубликатов.
-		"""
-		if mode == "none":  # Если режим "без удаления"
-			return files, 0  # Возвращаем исходный список файлов и 0 дубликатов
-
-		# Использование multiprocessing для вычисления хэшей
-		with Pool(processes=4) as pool:  # Создание пула процессов (4 ядра)
-			file_info = dict(pool.map(lambda f: (f, {"hash": self.get_file_hash(f), "size": os.path.getsize(f),
-													 "mod_time": os.path.getmtime(f), "name": os.path.basename(f)}),
-									  files))  # Вычисление информации о файлах параллельно
-
-		duplicates_count = 0  # Счётчик удалённых дубликатов
-		duplicates = {}  # Словарь для группировки дубликатов
-		if mode == "normal":  # Обычный режим (точное совпадение по хэшу)
+		duplicates_count = 0
+		duplicates = {}
+		if mode == "normal":
 			for path, info in file_info.items():
-				key = info["hash"]  # Ключ — хэш файла
+				key = info["hash"]
 				if key not in duplicates:
-					duplicates[key] = []  # Инициализация списка для хэша
-				duplicates[key].append(path)  # Добавление пути в группу
-		elif mode == "hardcore":  # Жёсткий режим (совпадение по имени и размеру)
+					duplicates[key] = []
+				duplicates[key].append(path)
+		elif mode == "hardcore":
 			for path, info in file_info.items():
-				key = (info["name"], info["size"])  # Ключ — имя и размер
+				key = (info["name"], info["size"])
 				if key not in duplicates:
-					duplicates[key] = []  # Инициализация списка для ключа
-				duplicates[key].append(path)  # Добавление пути в группу
-		unique_files = []  # Список уникальных файлов
-		for group in duplicates.values():  # Обход групп дубликатов
-			if len(group) > 1:  # Если в группе больше одного файла
-				sorted_group = sorted(group, key=lambda x: file_info[x]["mod_time"],
-									  reverse=True)  # Сортировка по времени (новые первыми)
-				keep_file = sorted_group[0]  # Оставляем самый новый файл
-				unique_files.append(keep_file)  # Добавление файла в список уникальных
-				duplicates_count += len(sorted_group) - 1  # Увеличение счётчика дубликатов
-				for duplicate in sorted_group[1:]:  # Удаление остальных дубликатов
-					os.remove(duplicate)  # Удаление файла
-					logger.info(_(f"Removed duplicate: {os.path.basename(duplicate)}"))  # Логирование удаления
-					self.log_message(_(f"Removed duplicate: {os.path.basename(duplicate)}"))  # Вывод в GUI
+					duplicates[key] = []
+				duplicates[key].append(path)
+		unique_files = []
+		for group in duplicates.values():
+			if len(group) > 1:
+				sorted_group = sorted(group, key=lambda x: file_info[x]["mod_time"], reverse=True)
+				keep_file = sorted_group[0]
+				unique_files.append(keep_file)
+				duplicates_count += len(sorted_group) - 1
+				for duplicate in sorted_group[1:]:
+					os.remove(duplicate)
+					logger.info(_(f"Removed duplicate: {os.path.basename(duplicate)}"))
+					self.log_message(_(f"Removed duplicate: {os.path.basename(duplicate)}"))
 			else:
-				unique_files.append(group[0])  # Добавление единственного файла в группу
-		return unique_files, duplicates_count  # Возвращение списка уникальных файлов и числа дубликатов
+				unique_files.append(group[0])
+		return unique_files, duplicates_count
 
 	async def async_generate_auto_categories(self, files):
-		"""
-		Асинхронно генерирует категории с помощью Ollama на основе анализа файлов.
-
-		Аргументы:
-			files (list): Список путей к файлам для анализа.
-		"""
-		self.category_list.clear()  # Очистка текущего списка категорий
-		self.category_tree.delete(*self.category_tree.get_children())  # Очистка дерева категорий
+		"""Асинхронно генерирует категории с помощью Ollama на основе анализа файлов."""
+		self.category_list.clear()
+		self.category_tree.delete(*self.category_tree.get_children())
 		file_info_list = [{"filename": os.path.basename(f), "extension": os.path.splitext(f)[1].lower(),
-						   "size_bytes": os.path.getsize(f)} for f in files]  # Формирование списка информации о файлах
+						   "size_bytes": os.path.getsize(f)} for f in files]
 		prompt = f"""
-        {_('Analyze the following files and suggest a hierarchical category structure with a maximum depth of')} {self.max_depth}.
-        {_('Return a JSON object with categories and subcategories based on file names, extensions, and sizes.')}
+	    {_('Analyze the following files and suggest a hierarchical category structure with a maximum depth of')} {self.max_depth}.
+	    {_('Return a JSON object with categories and subcategories based on file names, extensions, and sizes.')}
 
-        Files: {json.dumps(file_info_list, indent=2)}
+	    Files: {json.dumps(file_info_list, indent=2)}
 
-        {_('Example output:')}
-        {{
-            "Documents": {{
-                "Work": {{}},
-                "Personal": {{}}
-            }},
-            "Images": {{}},
-            "PDF": {{}}
-        }}
-        """  # Формирование запроса для Ollama
-		async with aiohttp.ClientSession() as session:  # Создание асинхронной сессии
+	    {_('Example output:')}
+	    {{
+	        "Documents": {{
+	            "Work": {{}},
+	            "Personal": {{}}
+	        }},
+	        "Images": {{}},
+	        "PDF": {{}}
+	    }}
+	    """
+		logger.info(f"Sending request to Ollama for category generation with {len(files)} files")
+		async with aiohttp.ClientSession() as session:
 			try:
+				logger.info("Waiting for Ollama response (timeout set to 120 seconds)")
 				async with session.post(f"{self.ollama_url}/generate",
-										json={"model": self.model, "prompt": prompt, "stream": False}) as response:
-					if response.status == 200:  # Если запрос успешен
-						data = await response.json()  # Получение асинхронного ответа
-						categories = json.loads(data.get("response", "{}"))  # Парсинг ответа в JSON
-						self._build_category_tree(categories)  # Построение дерева категорий
-						logger.info(_("Automatic categories generated by Ollama"))  # Логирование успешной генерации
-						self.log_message(_("Automatic categories generated by Ollama"))  # Вывод в GUI
+										json={"model": self.model, "prompt": prompt, "stream": False},
+										timeout=aiohttp.ClientTimeout(total=120)) as response:  # Тайм-аут 120 секунд
+					logger.info(f"Ollama response status: {response.status}")
+					if response.status == 200:
+						data = await response.json()
+						logger.debug(f"Ollama response: {data}")
+						categories = json.loads(data.get("response", "{}"))
+						self._build_category_tree(categories)
+						logger.info(_("Automatic categories generated by Ollama"))
+						self.log_message(_("Automatic categories generated by Ollama"))
 					else:
-						logger.warning(
-							_(f"Failed to generate categories: {response.status}"))  # Логирование предупреждения
-						self.log_message(_(f"Failed to generate categories: {response.status}"))  # Вывод в GUI
-						self.category_list = ["Default"]  # Установка категории по умолчанию
-						self.category_tree.insert("", tk.END, text="Default")  # Добавление категории в дерево
+						logger.warning(_(f"Failed to generate categories: {response.status}"))
+						self.log_message(_(f"Failed to generate categories: {response.status}"))
+						self.category_list = ["Default"]
+						self.category_tree.insert("", tk.END, text="Default")
 			except Exception as e:
-				logger.error(_(f"Error generating categories: {str(e)}"))  # Логирование ошибки
-				self.log_message(_(f"Error generating categories: {str(e)}"))  # Вывод в GUI
-				self.category_list = ["Default"]  # Установка категории по умолчанию
-				self.category_tree.insert("", tk.END, text="Default")  # Добавление категории в дерево
+				import traceback
+				logger.error(_(f"Error generating categories: {str(e)}\n{traceback.format_exc()}"))
+				self.log_message(_(f"Error generating categories: {str(e)}"))
+				self.category_list = ["Default"]
+				self.category_tree.insert("", tk.END, text="Default")
 
 	def _build_category_tree(self, categories, parent=""):
 		"""
@@ -811,8 +819,15 @@ class DocumentSorter:
 			self.log_message(_(f"Found {len(files)} files to process"))  # Вывод в GUI
 
 			if self.auto_sort_var.get():  # Если включена автоматическая сортировка
-				asyncio.run_coroutine_threadsafe(self.async_generate_auto_categories(files),
-												 self.loop).result()  # Асинхронная генерация категорий
+				try:
+					asyncio.run_coroutine_threadsafe(self.async_generate_auto_categories(files),
+													 self.loop).result()  # Асинхронная генерация категорий
+				except Exception as e:
+					logger.warning(_(f"Auto-category generation failed: {str(e)}. Using default categories."))
+					self.log_message(_(f"Auto-category generation failed: {str(e)}. Using default categories."))
+					self.category_list = ["Documents", "Images", "Audio", "Other"]  # Резервные категории
+					for cat in self.category_list:
+						self.category_tree.insert("", tk.END, text=cat)
 			for category in self.category_list:  # Создание папок для категорий
 				os.makedirs(os.path.join(dest_dir, category), exist_ok=True)  # Создание директории, если её нет
 
