@@ -16,6 +16,7 @@ import logging  # Для улучшенного логирования
 from logging.handlers import RotatingFileHandler  # Для ротации логов
 import asyncio  # Для асинхронных запросов
 import aiohttp  # Асинхронный HTTP-клиент
+import requests  # Синхронный HTTP-клиент (добавлен для исправления ошибки)
 from multiprocessing import Pool  # Для многопроцессорной обработки
 
 import PyPDF2  # Для работы с PDF-файлами
@@ -47,14 +48,14 @@ logger = logging.getLogger(__name__)  # Создание логгера
 
 def setup_localization(lang="en"):
 	"""
-    Настраивает локализацию приложения для поддержки нескольких языков.
+	Настраивает локализацию приложения для поддержки нескольких языков.
 
-    Аргументы:
-        lang (str): Код языка (по умолчанию "en" для английского).
+	Аргументы:
+		lang (str): Код языка (по умолчанию "en" для английского).
 
-    Возвращает:
-        function: Функция перевода текста (_).
-    """
+	Возвращает:
+		function: Функция перевода текста (_).
+	"""
 	languages = {'en': 'en_US', 'ru': 'ru_RU'}  # Словарь поддерживаемых языков
 	loc = languages.get(lang, 'en_US')  # Выбор локали по коду языка, по умолчанию английский
 	translation = gettext.translation('sorter', localedir='locale', languages=[loc], fallback=True)
@@ -68,30 +69,30 @@ _ = setup_localization("en")  # Инициализация функции пер
 
 class DocumentSorter:
 	"""
-    Класс для сортировки документов с использованием модели Ollama.
+	Класс для сортировки документов с использованием модели Ollama.
 
-    Атрибуты:
-        root (TkinterDnD.Tk): Корневое окно приложения с поддержкой Drag-and-Drop.
-        ollama_url (str): URL для подключения к API Ollama.
-        model (str): Текущая модель Ollama для классификации.
-        available_models (list): Список доступных моделей Ollama.
-        category_list (list): Список категорий для сортировки.
-        cache (dict): Кэш для хранения результатов классификации файлов.
-        language (str): Текущий язык интерфейса.
-        google_drive_service (Any): Сервис Google Drive API или None.
-        dropbox_client (Dropbox): Клиент Dropbox API или None.
-        onedrive_client (Any): Клиент OneDrive API или None.
-        is_paused (bool): Флаг приостановки сортировки.
-    """
+	Атрибуты:
+		root (TkinterDnD.Tk): Корневое окно приложения с поддержкой Drag-and-Drop.
+		ollama_url (str): URL для подключения к API Ollama.
+		model (str): Текущая модель Ollama для классификации.
+		available_models (list): Список доступных моделей Ollama.
+		category_list (list): Список категорий для сортировки.
+		cache (dict): Кэш для хранения результатов классификации файлов.
+		language (str): Текущий язык интерфейса.
+		google_drive_service (Any): Сервис Google Drive API или None.
+		dropbox_client (Dropbox): Клиент Dropbox API или None.
+		onedrive_client (Any): Клиент OneDrive API или None.
+		is_paused (bool): Флаг приостановки сортировки.
+	"""
 
 	def __init__(self, root, ollama_url="http://localhost:11434/api"):
 		"""
-        Инициализирует экземпляр класса DocumentSorter.
+		Инициализирует экземпляр класса DocumentSorter.
 
-        Аргументы:
-            root (TkinterDnD.Tk): Корневое окно приложения.
-            ollama_url (str): URL для подключения к API Ollama (по умолчанию "http://localhost:11434/api").
-        """
+		Аргументы:
+			root (TkinterDnD.Tk): Корневое окно приложения.
+			ollama_url (str): URL для подключения к API Ollama (по умолчанию "http://localhost:11434/api").
+		"""
 		self.root = root  # Сохранение корневого окна
 		self.root.title(_("Document Sorter with Ollama"))  # Установка заголовка окна
 		self.root.geometry("900x700")  # Установка размеров окна
@@ -117,15 +118,29 @@ class DocumentSorter:
 		self.root.dnd_bind('<<Drop>>', self.handle_drop)  # Привязка обработчика события перетаскивания
 
 		# Настройка асинхронного цикла
-		self.loop = asyncio.get_event_loop()  # Получение цикла событий для асинхронности
+		self.loop = asyncio.new_event_loop()  # Создаём новый цикл событий
+		self.loop_thread = threading.Thread(target=self.run_loop, daemon=True)
+		self.loop_thread.start()  # Запускаем цикл в отдельном потоке
+		self.root.protocol("WM_DELETE_WINDOW", self.on_closing)  # Привязка закрытия окна
+
+	def run_loop(self):
+		"""Запускает цикл событий asyncio в отдельном потоке."""
+		asyncio.set_event_loop(self.loop)
+		self.loop.run_forever()
+
+	def on_closing(self):
+		"""Обработчик закрытия окна, завершает цикл событий."""
+		self.loop.call_soon_threadsafe(self.loop.stop)
+		self.loop_thread.join()  # Ждём завершения потока
+		self.root.destroy()
 
 	def load_cache(self):
 		"""
-        Загружает кэш классификации из файла cache.json.
+		Загружает кэш классификации из файла cache.json.
 
-        Возвращает:
-            dict: Словарь с результатами классификации или пустой словарь.
-        """
+		Возвращает:
+			dict: Словарь с результатами классификации или пустой словарь.
+		"""
 		cache_file = "cache.json"  # Имя файла кэша
 		if os.path.exists(cache_file):  # Проверка наличия файла
 			with open(cache_file, 'r', encoding='utf-8') as f:  # Открытие файла для чтения
@@ -134,15 +149,15 @@ class DocumentSorter:
 
 	def save_cache(self):
 		"""
-        Сохраняет кэш классификации в файл cache.json.
-        """
+		Сохраняет кэш классификации в файл cache.json.
+		"""
 		with open("cache.json", 'w', encoding='utf-8') as f:  # Открытие файла для записи
 			json.dump(self.cache, f, indent=2)  # Сохранение кэша в JSON
 
 	def load_config(self):
 		"""
-        Загружает пользовательские настройки из файла config.json.
-        """
+		Загружает пользовательские настройки из файла config.json.
+		"""
 		config_file = "config.json"  # Имя файла конфигурации
 		if os.path.exists(config_file):  # Проверка наличия файла
 			with open(config_file, 'r', encoding='utf-8') as f:  # Открытие файла для чтения
@@ -166,8 +181,8 @@ class DocumentSorter:
 
 	def save_config(self):
 		"""
-        Сохраняет пользовательские настройки в файл config.json.
-        """
+		Сохраняет пользовательские настройки в файл config.json.
+		"""
 		config = {
 			"source_dir": self.source_dir_var.get(),  # Сохранение исходной папки
 			"dest_dir": self.dest_dir_var.get(),  # Сохранение целевой папки
@@ -181,8 +196,8 @@ class DocumentSorter:
 
 	def setup_ui(self):
 		"""
-        Настраивает пользовательский интерфейс приложения.
-        """
+		Настраивает пользовательский интерфейс приложения.
+		"""
 		# Создание главного меню
 		menubar = tk.Menu(self.root)  # Инициализация меню
 		self.root.config(menu=menubar)  # Установка меню в окно
@@ -322,8 +337,8 @@ class DocumentSorter:
 
 	def toggle_auto_sort(self):
 		"""
-        Включает или отключает автоматическую сортировку и управление кнопками категорий.
-        """
+		Включает или отключает автоматическую сортировку и управление кнопками категорий.
+		"""
 		if self.auto_sort_var.get():  # Если автоматическая сортировка включена
 			self.add_category_btn.config(state=tk.DISABLED)  # Отключение кнопки добавления категории
 			self.add_subcategory_btn.config(state=tk.DISABLED)  # Отключение кнопки добавления подкатегории
@@ -338,11 +353,11 @@ class DocumentSorter:
 
 	def change_language(self, lang):
 		"""
-        Меняет язык интерфейса приложения.
+		Меняет язык интерфейса приложения.
 
-        Аргументы:
-            lang (str): Код языка ("en" для английского, "ru" для русского).
-        """
+		Аргументы:
+			lang (str): Код языка ("en" для английского, "ru" для русского).
+		"""
 		global _  # Доступ к глобальной функции перевода
 		self.language = lang  # Установка нового языка
 		_ = setup_localization(lang)  # Обновление функции перевода
@@ -351,8 +366,8 @@ class DocumentSorter:
 
 	def connect_google_drive(self):
 		"""
-        Подключает приложение к Google Drive через API.
-        """
+		Подключает приложение к Google Drive через API.
+		"""
 		try:
 			creds = service_account.Credentials.from_service_account_file("credentials.json", scopes=[
 				"https://www.googleapis.com/auth/drive"])
@@ -366,8 +381,8 @@ class DocumentSorter:
 
 	def connect_dropbox(self):
 		"""
-        Подключает приложение к Dropbox через API.
-        """
+		Подключает приложение к Dropbox через API.
+		"""
 		token = simpledialog.askstring(_("Dropbox"), _("Enter Dropbox Access Token:"))  # Запрос токена доступа
 		if token:  # Если токен введён
 			try:
@@ -380,8 +395,8 @@ class DocumentSorter:
 
 	def connect_onedrive(self):
 		"""
-        Подключает приложение к OneDrive через API.
-        """
+		Подключает приложение к OneDrive через API.
+		"""
 		client_id = simpledialog.askstring(_("OneDrive"), _("Enter OneDrive Client ID:"))  # Запрос Client ID
 		client_secret = simpledialog.askstring(_("OneDrive"),
 											   _("Enter OneDrive Client Secret:"))  # Запрос Client Secret
@@ -405,11 +420,11 @@ class DocumentSorter:
 
 	def handle_drop(self, event):
 		"""
-        Обрабатывает событие Drag-and-Drop для выбора исходной папки.
+		Обрабатывает событие Drag-and-Drop для выбора исходной папки.
 
-        Аргументы:
-            event: Событие перетаскивания с данными о сброшенном объекте.
-        """
+		Аргументы:
+			event: Событие перетаскивания с данными о сброшенном объекте.
+		"""
 		dropped = event.data  # Получение данных о сброшенном объекте
 		if os.path.isdir(dropped):  # Проверка, является ли объект папкой
 			self.source_dir_var.set(dropped)  # Установка пути в переменную исходной папки
@@ -419,8 +434,8 @@ class DocumentSorter:
 
 	def check_ollama_status(self):
 		"""
-        Проверяет статус подключения к Ollama API и обновляет метку статуса.
-        """
+		Проверяет статус подключения к Ollama API и обновляет метку статуса.
+		"""
 		try:
 			response = requests.get(f"{self.ollama_url}/version")  # Запрос версии API Ollama
 			if response.status_code == 200:  # Если запрос успешен
@@ -434,12 +449,13 @@ class DocumentSorter:
 			self.status_label.config(text=_("Disconnected (Is Ollama running?)"),
 									 foreground="red")  # Статус "Отключено"
 			logger.error(_("Cannot connect to Ollama"))  # Логирование ошибки
+			self.log_message(_("Cannot connect to Ollama"))  # Вывод в GUI
 			self.root.after(5000, self.check_ollama_status)  # Повторная проверка через 5 секунд
 
 	def fetch_models(self):
 		"""
-        Получает список доступных моделей от Ollama и обновляет выпадающий список.
-        """
+		Получает список доступных моделей от Ollama и обновляет выпадающий список.
+		"""
 		try:
 			response = requests.get(f"{self.ollama_url}/tags")  # Запрос списка моделей
 			if response.status_code == 200:  # Если запрос успешен
@@ -458,19 +474,19 @@ class DocumentSorter:
 
 	def on_model_selected(self, event):
 		"""
-        Обрабатывает выбор модели из выпадающего списка.
+		Обрабатывает выбор модели из выпадающего списка.
 
-        Аргументы:
-            event: Событие выбора элемента в Combobox.
-        """
+		Аргументы:
+			event: Событие выбора элемента в Combobox.
+		"""
 		self.model = self.model_combobox.get()  # Получение выбранной модели
 		logger.info(_(f"Selected model: {self.model}"))  # Логирование выбора модели
 		self.log_message(_(f"Selected model: {self.model}"))  # Вывод в GUI
 
 	def browse_source_dir(self):
 		"""
-        Открывает диалог для выбора исходной папки.
-        """
+		Открывает диалог для выбора исходной папки.
+		"""
 		dir_path = filedialog.askdirectory(title=_("Select Source Directory"))  # Открытие диалога выбора папки
 		if dir_path:  # Если папка выбрана
 			self.source_dir_var.set(dir_path)  # Установка пути в переменную
@@ -478,8 +494,8 @@ class DocumentSorter:
 
 	def browse_dest_dir(self):
 		"""
-        Открывает диалог для выбора целевой папки.
-        """
+		Открывает диалог для выбора целевой папки.
+		"""
 		dir_path = filedialog.askdirectory(title=_("Select Destination Directory"))  # Открытие диалога выбора папки
 		if dir_path:  # Если папка выбрана
 			self.dest_dir_var.set(dir_path)  # Установка пути в переменную
@@ -487,8 +503,8 @@ class DocumentSorter:
 
 	def add_category(self):
 		"""
-        Добавляет новую категорию в список категорий.
-        """
+		Добавляет новую категорию в список категорий.
+		"""
 		category = simpledialog.askstring(_("Add Category"), _("Enter category name:"))  # Запрос имени категории
 		if category and category not in self.category_list:  # Если имя введено и уникально
 			self.category_tree.insert("", tk.END, text=category)  # Добавление категории в дерево
@@ -497,8 +513,8 @@ class DocumentSorter:
 
 	def add_subcategory(self):
 		"""
-        Добавляет подкатегорию к выбранной категории.
-        """
+		Добавляет подкатегорию к выбранной категории.
+		"""
 		selected = self.category_tree.selection()  # Получение выбранного элемента
 		if not selected:  # Если ничего не выбрано
 			messagebox.showwarning(_("Warning"), _("Select a category first"))  # Предупреждение
@@ -513,8 +529,8 @@ class DocumentSorter:
 
 	def remove_category(self):
 		"""
-        Удаляет выбранную категорию или подкатегорию из списка.
-        """
+		Удаляет выбранную категорию или подкатегорию из списка.
+		"""
 		selected = self.category_tree.selection()  # Получение выбранного элемента
 		if selected:  # Если элемент выбран
 			item = self.category_tree.item(selected[0])["text"]  # Получение имени элемента
@@ -527,11 +543,11 @@ class DocumentSorter:
 
 	def log_message(self, message):
 		"""
-        Добавляет сообщение в лог с временной меткой для вывода в GUI.
+		Добавляет сообщение в лог с временной меткой для вывода в GUI.
 
-        Аргументы:
-            message (str): Текст сообщения для добавления в лог.
-        """
+		Аргументы:
+			message (str): Текст сообщения для добавления в лог.
+		"""
 		self.log_text.config(state=tk.NORMAL)  # Включение редактирования текстового поля
 		self.log_text.insert(tk.END, f"{time.strftime('%H:%M:%S')} - {message}\n")  # Добавление сообщения с временем
 		self.log_text.see(tk.END)  # Автоматическая прокрутка вниз
@@ -539,8 +555,8 @@ class DocumentSorter:
 
 	def export_log(self):
 		"""
-        Экспортирует содержимое лога в текстовый файл.
-        """
+		Экспортирует содержимое лога в текстовый файл.
+		"""
 		log_content = self.log_text.get("1.0", tk.END)  # Получение всего текста из лога
 		file_path = filedialog.asksaveasfilename(defaultextension=".txt",
 												 filetypes=[("Text files", "*.txt")])  # Запрос пути для сохранения
@@ -552,8 +568,8 @@ class DocumentSorter:
 
 	def create_backup(self):
 		"""
-        Создаёт резервную копию исходной папки в ZIP-архиве.
-        """
+		Создаёт резервную копию исходной папки в ZIP-архиве.
+		"""
 		source_dir = self.source_dir_var.get()  # Получение пути к исходной папке
 		if not source_dir or not os.path.isdir(source_dir):  # Проверка корректности пути
 			messagebox.showerror(_("Error"), _("Please select a valid source directory"))  # Ошибка, если путь неверный
@@ -576,8 +592,8 @@ class DocumentSorter:
 
 	def start_sorting(self):
 		"""
-        Запускает процесс сортировки файлов в отдельном потоке.
-        """
+		Запускает процесс сортировки файлов в отдельном потоке.
+		"""
 		if self.is_processing:  # Если сортировка уже идёт
 			return
 		source_dir = self.source_dir_var.get()  # Получение исходной папки
@@ -614,8 +630,8 @@ class DocumentSorter:
 
 	def pause_sorting(self):
 		"""
-        Приостанавливает или возобновляет процесс сортировки.
-        """
+		Приостанавливает или возобновляет процесс сортировки.
+		"""
 		if self.is_processing:  # Если сортировка идёт
 			self.is_paused = not self.is_paused  # Переключение состояния приостановки
 			self.pause_button.config(text=_("Resume") if self.is_paused else _("Pause"))  # Обновление текста кнопки
@@ -624,8 +640,8 @@ class DocumentSorter:
 
 	def cancel_sorting(self):
 		"""
-        Отменяет процесс сортировки после подтверждения пользователя.
-        """
+		Отменяет процесс сортировки после подтверждения пользователя.
+		"""
 		if self.is_processing:  # Если сортировка идёт
 			if messagebox.askyesno(_("Confirm"), _("Are you sure you want to cancel sorting?")):  # Запрос подтверждения
 				self.cancel_requested = True  # Установка флага отмены
@@ -634,14 +650,14 @@ class DocumentSorter:
 
 	def get_file_hash(self, file_path):
 		"""
-        Вычисляет MD5-хэш файла для поиска дубликатов и кэширования.
+		Вычисляет MD5-хэш файла для поиска дубликатов и кэширования.
 
-        Аргументы:
-            file_path (str): Путь к файлу.
+		Аргументы:
+			file_path (str): Путь к файлу.
 
-        Возвращает:
-            str: Хэш файла в виде строки.
-        """
+		Возвращает:
+			str: Хэш файла в виде строки.
+		"""
 		hasher = hashlib.md5()  # Инициализация объекта для вычисления MD5
 		with open(file_path, 'rb') as f:  # Открытие файла в бинарном режиме
 			hasher.update(f.read())  # Обновление хэша содержимым файла
@@ -649,15 +665,15 @@ class DocumentSorter:
 
 	def find_and_remove_duplicates(self, files, mode="normal"):
 		"""
-        Находит и удаляет дубликаты файлов в зависимости от режима с использованием multiprocessing.
+		Находит и удаляет дубликаты файлов в зависимости от режима с использованием multiprocessing.
 
-        Аргументы:
-            files (list): Список путей к файлам.
-            mode (str): Режим удаления дубликатов ("normal" — точное совпадение, "hardcore" — по имени и размеру).
+		Аргументы:
+			files (list): Список путей к файлам.
+			mode (str): Режим удаления дубликатов ("normal" — точное совпадение, "hardcore" — по имени и размеру).
 
-        Возвращает:
-            tuple: Список уникальных файлов и количество удалённых дубликатов.
-        """
+		Возвращает:
+			tuple: Список уникальных файлов и количество удалённых дубликатов.
+		"""
 		if mode == "none":  # Если режим "без удаления"
 			return files, 0  # Возвращаем исходный список файлов и 0 дубликатов
 
@@ -699,11 +715,11 @@ class DocumentSorter:
 
 	async def async_generate_auto_categories(self, files):
 		"""
-        Асинхронно генерирует категории с помощью Ollama на основе анализа файлов.
+		Асинхронно генерирует категории с помощью Ollama на основе анализа файлов.
 
-        Аргументы:
-            files (list): Список путей к файлам для анализа.
-        """
+		Аргументы:
+			files (list): Список путей к файлам для анализа.
+		"""
 		self.category_list.clear()  # Очистка текущего списка категорий
 		self.category_tree.delete(*self.category_tree.get_children())  # Очистка дерева категорий
 		file_info_list = [{"filename": os.path.basename(f), "extension": os.path.splitext(f)[1].lower(),
@@ -748,12 +764,12 @@ class DocumentSorter:
 
 	def _build_category_tree(self, categories, parent=""):
 		"""
-        Рекурсивно строит дерево категорий из структуры JSON.
+		Рекурсивно строит дерево категорий из структуры JSON.
 
-        Аргументы:
-            categories (dict): Словарь категорий и подкатегорий от Ollama.
-            parent (str): Идентификатор родительской категории в дереве (по умолчанию пустой).
-        """
+		Аргументы:
+			categories (dict): Словарь категорий и подкатегорий от Ollama.
+			parent (str): Идентификатор родительской категории в дереве (по умолчанию пустой).
+		"""
 		for cat, subcats in categories.items():  # Обход категорий и их подкатегорий
 			full_cat = f"{parent}/{cat}" if parent else cat  # Формирование полного пути категории
 			self.category_list.append(full_cat)  # Добавление категории в список
@@ -765,12 +781,12 @@ class DocumentSorter:
 
 	def sort_documents(self, source_dir, dest_dir):
 		"""
-        Сортирует документы из исходной папки в целевую с учётом дубликатов и категорий.
+		Сортирует документы из исходной папки в целевую с учётом дубликатов и категорий.
 
-        Аргументы:
-            source_dir (str): Путь к исходной папке.
-            dest_dir (str): Путь к целевой папке.
-        """
+		Аргументы:
+			source_dir (str): Путь к исходной папке.
+			dest_dir (str): Путь к целевой папке.
+		"""
 		try:
 			start_time = time.time()  # Запись времени начала сортировки
 			files = []  # Список файлов для сортировки
@@ -857,11 +873,11 @@ class DocumentSorter:
 
 	def generate_report(self, stats):
 		"""
-        Генерирует HTML-отчёт со статистикой сортировки.
+		Генерирует HTML-отчёт со статистикой сортировки.
 
-        Аргументы:
-            stats (dict): Словарь со статистикой (обработанные файлы, категории, дубликаты, время).
-        """
+		Аргументы:
+			stats (dict): Словарь со статистикой (обработанные файлы, категории, дубликаты, время).
+		"""
 		env = Environment(loader=FileSystemLoader('.'))  # Настройка Jinja2 с загрузкой шаблонов из текущей папки
 		template = env.from_string("""
         <!DOCTYPE html>
@@ -884,15 +900,15 @@ class DocumentSorter:
 
 	async def get_cloud_files(self, source_dir, service="local"):
 		"""
-        Асинхронно получает файлы из облачных хранилищ (Google Drive, Dropbox, OneDrive) или локально.
+		Асинхронно получает файлы из облачных хранилищ (Google Drive, Dropbox, OneDrive) или локально.
 
-        Аргументы:
-            source_dir (str): Путь к папке (локальной или в облаке).
-            service (str): Тип сервиса ("google_drive", "dropbox", "onedrive", "local").
+		Аргументы:
+			source_dir (str): Путь к папке (локальной или в облаке).
+			service (str): Тип сервиса ("google_drive", "dropbox", "onedrive", "local").
 
-        Возвращает:
-            list: Список путей к скачанным файлам.
-        """
+		Возвращает:
+			list: Список путей к скачанным файлам.
+		"""
 		files = []  # Список для хранения путей к файлам
 		temp_dir = os.path.join(os.path.expanduser("~"), "DocumentSorterTemp")  # Временная папка для скачивания
 		os.makedirs(temp_dir, exist_ok=True)  # Создание временной папки, если её нет
@@ -937,11 +953,11 @@ class DocumentSorter:
 
 	async def sync_to_cloud(self, dest_dir):
 		"""
-        Асинхронно синхронизирует отсортированные файлы с облачным хранилищем.
+		Асинхронно синхронизирует отсортированные файлы с облачным хранилищем.
 
-        Аргументы:
-            dest_dir (str): Путь к целевой папке для синхронизации.
-        """
+		Аргументы:
+			dest_dir (str): Путь к целевой папке для синхронизации.
+		"""
 		if self.google_drive_service:
 			for root, dirs, files in os.walk(dest_dir):
 				for file in files:
@@ -986,12 +1002,12 @@ class DocumentSorter:
 
 	def process_file(self, file_path, dest_dir):
 		"""
-        Обрабатывает один файл: классифицирует и перемещает его в целевую папку.
+		Обрабатывает один файл: классифицирует и перемещает его в целевую папку.
 
-        Аргументы:
-            file_path (str): Путь к файлу.
-            dest_dir (str): Целевая папка для сортировки.
-        """
+		Аргументы:
+			file_path (str): Путь к файлу.
+			dest_dir (str): Целевая папка для сортировки.
+		"""
 		filename = os.path.basename(file_path)  # Получение имени файла
 		file_info = {"filename": filename, "extension": os.path.splitext(filename)[1].lower(),
 					 "size_bytes": os.path.getsize(file_path)}  # Формирование информации о файле
@@ -1011,14 +1027,14 @@ class DocumentSorter:
 
 	async def async_classify_file(self, file_info):
 		"""
-        Асинхронно классифицирует файл с помощью Ollama и возвращает категорию, используя кэш.
+		Асинхронно классифицирует файл с помощью Ollama и возвращает категорию, используя кэш.
 
-        Аргументы:
-            file_info (dict): Информация о файле (имя, расширение, размер).
+		Аргументы:
+			file_info (dict): Информация о файле (имя, расширение, размер).
 
-        Возвращает:
-            str: Название категории для файла.
-        """
+		Возвращает:
+			str: Название категории для файла.
+		"""
 		file_path = os.path.join(self.source_dir_var.get(), file_info["filename"])  # Полный путь к файлу
 		file_hash = self.get_file_hash(file_path)  # Вычисление хэша файла
 		if file_hash in self.cache:  # Проверка наличия файла в кэше
@@ -1075,8 +1091,8 @@ class DocumentSorter:
 
 	def complete_sorting(self):
 		"""
-        Завершает процесс сортировки и восстанавливает интерфейс.
-        """
+		Завершает процесс сортировки и восстанавливает интерфейс.
+		"""
 		self.is_processing = False  # Сброс флага выполнения
 		self.sort_button.config(state=tk.NORMAL)  # Включение кнопки сортировки
 		self.backup_button.config(state=tk.NORMAL)  # Включение кнопки резервного копирования
@@ -1088,8 +1104,8 @@ class DocumentSorter:
 
 def main():
 	"""
-    Главная функция для запуска приложения с поддержкой командной строки или GUI.
-    """
+	Главная функция для запуска приложения с поддержкой командной строки или GUI.
+	"""
 	parser = argparse.ArgumentParser(description="Document Sorter")  # Инициализация парсера аргументов
 	parser.add_argument("--source", help="Source directory")  # Аргумент для исходной папки
 	parser.add_argument("--dest", help="Destination directory")  # Аргумент для целевой папки
