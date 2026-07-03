@@ -209,3 +209,11 @@ Ollama. Поддерживает работу с локальными файла
 ### Зависимости
 
 См. файл requirements.txt для полного списка зависимостей Python.
+
+---
+
+## Support the Project / Поддержать проект
+
+If ollamaFS untangles your file mess — support development. / Если ollamaFS распутал ваш файловый бардак — поддержите разработку.
+
+[![Support ollamaFS](docs/images/donate_banner.png)](https://dalink.to/bormotoon)
