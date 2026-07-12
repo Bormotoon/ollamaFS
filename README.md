@@ -1,5 +1,8 @@
 # Document Sorter with Ollama
 
+[![педобраз.рф](https://img.shields.io/badge/%D0%BF%D0%B5%D0%B4%D0%BE%D0%B1%D1%80%D0%B0%D0%B7.%D1%80%D1%84-project_page-D64500)](https://xn--80abidn3bem.xn--p1ai/projects/ollamafs/)
+[![Donate](https://img.shields.io/badge/%E2%9D%A4-Support%20the%20project-E53935)](https://dalink.to/bormotoon)
+
 ## English
 
 ### Overview
@@ -9,6 +12,8 @@ Source of inspiration and original idea: https://github.com/iyaja/llama-fs
 I really liked the idea of the “take shit apart” button, but I never got it to run properly. It wouldn't wind up on macOS for some reason, and also the API costs money... So when Grok 3 rolled out, I asked him to write it all over again.
 
 I think it turned out pretty well. Check it out for yourself.
+
+🌐 **Project page:** [педобраз.рф/projects/ollamafs](https://xn--80abidn3bem.xn--p1ai/projects/ollamafs/)
 
 "Document Sorter with Ollama" is a Python-based application designed to organize files into categories using the Ollama
 AI model. It supports both local and cloud-based file sorting (Google Drive and Dropbox), with features like duplicate
@@ -111,6 +116,8 @@ See requirements.txt for a complete list of Python dependencies.
 Мне очень понравилась мысль кнопки "разбери всё дерьмо", но я так никогда и не смог запустить как надо. На macOS оно почему-то не заводилось, да ещё и API стоит денег... Поэтому, когда выкатили Grok 3, я попросил его написать всё заново.
 
 По-моему, получилось неплохо. Зацените сами.
+
+🌐 **Страница проекта:** [педобраз.рф/projects/ollamafs](https://xn--80abidn3bem.xn--p1ai/projects/ollamafs/)
 
 "Document Sorter with Ollama" — это приложение на Python для сортировки файлов по категориям с использованием модели ИИ
 Ollama. Поддерживает работу с локальными файлами и облачными хранилищами (Google Drive и Dropbox), включает удаление
